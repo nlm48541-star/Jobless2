@@ -8,7 +8,6 @@ from video_editor import render_video_slideshow
 from youtube_uploader import get_youtube_service, upload_to_youtube
 
 TMP_DIR = "temp_assets"
-LIVESTREAM_DIR = "workspace_live"
 HISTORY_FILE = os.path.join(WORKSPACE_DIR, "history.txt")
 
 def add_to_history(entry_text):
@@ -31,7 +30,7 @@ def add_to_history(entry_text):
         except Exception: pass
 
 def process_ready_videos(yt):
-    print("\nScanning Drive folders for Videos / AI Processing...")
+    print("\nScanning Workspace folders for Videos / AI Processing...")
     if not os.path.exists(WORKSPACE_DIR): return
     if not os.path.exists(TMP_DIR): os.makedirs(TMP_DIR, exist_ok=True)
 
@@ -100,16 +99,19 @@ def process_ready_videos(yt):
                     continue
                 audio_path = gen_audio_path
 
+            # নতুন ডিজাইনের থাম্বনেইল তৈরি
             thumbnail_path = os.path.join(TMP_DIR, "thumbnail.jpg")
             if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
             generate_dynamic_thumbnail(raw_title, thumbnail_path, thumb_meta=thumb_meta)
 
+            # সরাসরি ইউটিউবের জন্য ১৬:৯ ভিডিও তৈরি
             out_video_file = os.path.join(TMP_DIR, "final_out.mp4")
             if os.path.exists(out_video_file): os.remove(out_video_file)
 
             print("Rendering 16:9 Landscape slideshow for YouTube upload...")
             render_video_slideshow(audio_path, img_files, out_video_file, is_vertical=False)
             
+            # সরাসরি ইউটিউবে আপলোড
             upload_success = upload_to_youtube(
                 yt, out_video_file, video_title, 
                 thumbnail_path if os.path.exists(thumbnail_path) else None,
@@ -118,21 +120,14 @@ def process_ready_videos(yt):
                 schedule_upload=True
             )
             
-            # 🌟 সফল হলে টাইটেল এবং আর্টিকেলের লিংক দুটোই হিস্টোরিতে সেভ হবে (যাতে ডুপ্লিকেট না হয়)
+            # সফল হলে হিস্টোরি সংরক্ষণ এবং লোকাল ফোল্ডার ক্লিনআপ
             if upload_success:
                 add_to_history(raw_title)
                 if article_link:
                     add_to_history(article_link)
 
-                try:
-                    if not os.path.exists(LIVESTREAM_DIR): os.makedirs(LIVESTREAM_DIR, exist_ok=True)
-                    safe_name = clean_filename(video_title)[:45].strip()
-                    live_video_file = os.path.join(LIVESTREAM_DIR, f"{safe_name}.mp4")
-                    render_video_slideshow(audio_path, img_files, live_video_file, is_vertical=True)
-                except Exception: pass
-
                 shutil.rmtree(folder_path, ignore_errors=True)
-                print(f"✅ Folder '{folder_name}' successfully processed and uploaded.\n")
+                print(f"✅ Folder '{folder_name}' successfully processed, uploaded to YouTube and cleared.\n")
 
         except Exception as folder_error:
             traceback.print_exc()
@@ -164,7 +159,7 @@ def process_shorts_folder(yt):
                 except Exception: pass
 
 if __name__ == "__main__":
-    print("\n====== [ Google Drive Bot Active | Auto Filter & AI Engine ] ======\n")
+    print("\n====== [ YouTube Direct Automation Active | No Cloud Drive ] ======\n")
     try:
         yt_service = get_youtube_service()
         try: check_new_articles_and_prepare_folders()
@@ -179,4 +174,4 @@ if __name__ == "__main__":
         traceback.print_exc()
     finally:
         if os.path.exists(TMP_DIR): shutil.rmtree(TMP_DIR, ignore_errors=True)
-        print("\nAll Tasks Finalized Perfectly.\n======================================")
+        print("\nAll YouTube Tasks Finalized Perfectly.\n======================================")
