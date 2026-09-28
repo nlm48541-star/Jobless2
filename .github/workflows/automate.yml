@@ -1,0 +1,94 @@
+name: RSS Video Automation System
+
+on:
+  repository_dispatch:
+    types: [rss_video_check] 
+  workflow_dispatch: 
+
+# 🌟 কনকারেন্সি লক: যাতে একাধিক রান একসাথে কিউ হয়ে আটকে না থাকে
+concurrency:
+  group: rss-automation-jobless
+  cancel-in-progress: true
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60 # অডিও জেনারেশন ও ভিডিও রেন্ডারিংয়ের জন্য নিরাপদ টাইমআউট
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      # 🌟 বাংলা ফন্ট, টেক্সট রেন্ডারিং ইঞ্জিন, FFmpeg ও Rclone (সুপারফাস্ট ১৫ সেকেন্ডে ইনস্টল)
+      - name: Install System Dependencies (Fonts, FFmpeg, Rclone)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-beng fonts-beng-extra libraqm-dev libraqm0 libfribidi0 libharfbuzz0b ffmpeg rclone
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Configure Rclone (Secure Quote Handling)
+        shell: python
+        env:
+          RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
+        run: |
+          import os
+          config_path = os.path.expanduser('~/.config/rclone/rclone.conf')
+          os.makedirs(os.path.dirname(config_path), exist_ok=True)
+          with open(config_path, 'w', encoding='utf-8') as f:
+              f.write(os.environ['RCLONE_CONF_DATA'])
+
+      - name: Download Files from Google Drive
+        run: |
+          mkdir -p workspace
+          rclone sync "gdrive:" ./workspace --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --fast-list
+
+      # 🌟 সমস্ত প্রয়োজনীয় API Secrets (Gemini, Fish Audio, Modal, ElevenLabs) পাস করা হয়েছে
+      - name: Run Python Process (Movie & YouTube upload)
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          GDRIVE_PARENT_FOLDER_ID: ${{ secrets.GDRIVE_PARENT_FOLDER_ID }}
+          GROQ_API: ${{ secrets.GROQ_API }}
+          Ollama_API_Key: ${{ secrets.Ollama_API_Key }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FISH_API_KEYS: ${{ secrets.FISH_API_KEYS }}
+          FISH_VOICE_ID: ${{ secrets.FISH_VOICE_ID }}
+          MODAL_ENDPOINTS: ${{ secrets.MODAL_ENDPOINTS }}
+          TTS_MODEL: ${{ secrets.TTS_MODEL }}
+          TTS_ENGINE: ${{ secrets.TTS_ENGINE }}
+          ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python main.py
+
+      # 🌟 প্রসেস করা ও ড্রাইভ থেকে ডিলিট করা ফোল্ডার ক্লিনআপ
+      - name: Push updates back to Google Drive (Permanent Folder Cleanup)
+        if: always()
+        run: |
+          rclone sync ./workspace "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --drive-use-trash=false --fast-list
+          rclone rmdirs "gdrive:" --drive-root-folder-id="${{ secrets.GDRIVE_PARENT_FOLDER_ID }}" --leave-root || true
+
+      # পোর্ট্রেট ভিডিও জবলাইভে পাঠানো
+      - name: Push JobLive videos to Google Drive
+        if: always()
+        run: |
+          if [ -d "workspace_live" ]; then
+            rclone copy ./workspace_live "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --fast-list
+          fi
+
+      # 🌟 'JobLive' ফোল্ডার থেকে ৩০ দিনের পুরোনো ভিডিও স্বয়ংক্রিয় ডিলিট
+      - name: Cleanup old JobLive videos (Older than 30 days)
+        if: always()
+        run: |
+          rclone delete "gdrive:" --drive-root-folder-id="1yFTcykKJaPdvlPC55SwmE0A8GCoYN6mW" --min-age 30d --fast-list || true
