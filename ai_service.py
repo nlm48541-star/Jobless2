@@ -6,7 +6,6 @@ from PIL import Image
 OLLAMA_API_URL = os.environ.get("OLLAMA_API_URL", "https://api.ollama.com").rstrip("/")
 GROQ_API = os.environ.get("GROQ_API", "").strip()
 
-# 🌟 আপনার দেওয়া Ollama Cloud অগ্রাধিকার তালিকা + ব্যাকআপ মডেল
 OLLAMA_MODELS = [
     "gemma4:31b",
     "gpt-oss:120b",
@@ -172,10 +171,10 @@ def extract_vacancy_and_qual(title):
     vac_match = re.search(r'(\d+|[০-৯]+)\s*(টি\s*)?পদে', title)
     vac_str = vac_match.group(0) if vac_match else ""
     qual = ""
-    if any(k in title.upper() for k in ["SSC", "এসএসসি"]): qual = "SSC পাশ যোগ্যতা"
-    elif any(k in title.upper() for k in ["HSC", "এইচএসসি"]): qual = "HSC পাশ যোগ্যতা"
-    elif any(k in title for k in ["৮ম", "অষ্টম"]): qual = "৮ম শ্রেণি পাশ"
-    elif any(k in title for k in ["স্নাতক", "ডিগ্রী", "অনার্স", "Degree", "Honours"]): qual = "স্নাতক পাশ যোগ্যতা"
+    if any(k in title.upper() for k in ["SSC", "এসএসসি"]): qual = "এসএসসি পাস"
+    elif any(k in title.upper() for k in ["HSC", "এইচএসসি"]): qual = "এইচএসসি পাস"
+    elif any(k in title for k in ["৮ম", "অষ্টম"]): qual = "৮ম শ্রেণি পাস"
+    elif any(k in title for k in ["স্নাতক", "ডিগ্রী", "অনার্স", "Degree", "Honours"]): qual = "স্নাতক পাস"
     return vac_str, qual
 
 def encode_image_base64(image_path, max_dim=1024):
@@ -199,7 +198,6 @@ def parse_json_safely(raw_text):
         return None
 
 def generate_job_content(title, img_paths):
-    cur_en, cur_bn = get_current_years()
     clean_title = clean_title_for_display(title)
     words = clean_title.split()
     org_name = clean_title.split("নিয়োগ")[0].strip() if "নিয়োগ" in clean_title else " ".join(words[:min(3, len(words))])
@@ -207,32 +205,63 @@ def generate_job_content(title, img_paths):
 
     prompt = f"""You are a professional Bengali YouTube SEO specialist, scriptwriter, and thumbnail strategist.
 Context:
-- Job Circular Title: "{clean_title}"
-- Organization: "{org_name}"
+- Circular Title: "{clean_title}"
+- Detected Org: "{org_name}"
 
 CRITICAL INSTRUCTIONS:
 1. SCRIPT: Exactly 3 minutes (380 to 440 words). Continuous spoken Bengali. Do NOT mention any year in the script. All numbers must be in full Bengali words. WhatsApp call to action at the end without using 'ঘরে বসে'.
-2. THUMBNAIL TEXT RULES (MUST BE HIGHLY ATTRACTIVE, DYNAMIC, AND UNIQUE FOR THIS JOB):
-   - "top_text": 2-3 words. Organization name or Category (e.g. "{org_name}", "সরকারি চাকরি", "বেসরকারি চাকরি").
-   - "row1_text": 2-3 words. Main Eye-Catching Hook (e.g. "অফিসার ক্যাডেট", "জরুরি নিয়োগ", "আকর্ষণীয় বেতন", "নতুন বেতন কাঠামো", "প্রকৌশলী নিয়োগ").
-   - "row2_text": 2-3 words. Specific Vacancy or Post count in RED (e.g. "{vac_str if vac_str else 'বিশাল শূন্যপদ'}", "১০,২১৯ পদে", "১৫৩২ পদে", "৮৫টি পদে").
-   - "sub_text": 2-3 words. Specific Qualification / District (e.g. "{qual_str if qual_str else 'SSC/HSC পাশ'}", "স্নাতক পাশ যোগ্যতা", "৬৪ জেলা থেকে আবেদন").
-   - "bot_text": 2-4 words. DYNAMIC & UNIQUE bottom bar text specifically tailored for this job (e.g. "আবেদনের শেষ তারিখ ও নিয়ম", "({vac_str if vac_str else 'হাজারো পদে'}) মেগা সার্কুলার", "বেতন স্কেল ও সুযোগ-সুবিধা", "বয়সসীমা ও যোগ্যতা", "অনলাইনে আবেদন শুরু"). NEVER use the same repetitive phrase for all jobs!
+2. JOB TYPE: Determine whether this is a government job ("govt") or private/non-government/company job ("non-govt").
+3. THUMBNAIL 5-LINE LAYOUT (STRICT FORMAT):
+   - "job_type": "govt" or "non-govt"
+   - "line1_text": 2-3 words hook (e.g. "{vac_str} নিয়োগ বিজ্ঞপ্তি" or "বিশাল নিয়োগ বিজ্ঞপ্তি" or "জরুরি নিয়োগ বিজ্ঞপ্তি")
+   - "line2_text": 2-3 words. Organization / Department Name in prominent Bengali (e.g. "{org_name}") - will be shown inside a colored box overlay!
+   - "line3_text": 2-3 words. Educational Qualification (e.g. "{qual_str if qual_str else 'এসএসসি পাস'}" or "স্নাতক পাস" or "৮ম শ্রেণি পাস")
+   - "line4_text": 2-4 words. Salary Scale or Key Benefit (e.g. "বেতন স্কেল ১২,০০০ টাকা" or "বেতন স্কেল ২২,০০০ টাকা" or "আকর্ষণীয় বেতন ও সুবিধা")
+   - "line5_text": 2-3 words. Deadline or CTA (e.g. "৩০ অক্টোবর পর্যন্ত" or "অনলাইনে আবেদন শুরু" or "আবেদনের শেষ তারিখ")
 
 Return strictly valid JSON:
 {{
+  "job_type": "govt",
   "optimized_title": "...",
   "voiceover_script": "...",
   "video_description": "...",
   "specific_tags": ["..."],
-  "top_text": "...",
-  "row1_text": "...",
-  "row2_text": "...",
-  "sub_text": "...",
-  "bot_text": "..."
+  "line1_text": "...",
+  "line2_text": "...",
+  "line3_text": "...",
+  "line4_text": "...",
+  "line5_text": "..."
 }}"""
 
     base64_images = [encode_image_base64(p) for p in img_paths[:3] if encode_image_base64(p)]
+
+    def extract_final_payload(data):
+        opt_title = normalize_outdated_years(data.get("optimized_title", clean_title).strip()[:100])
+        raw_script = normalize_outdated_years(re.sub(r'[\r\n]+', ' ', data.get("voiceover_script", "").strip()))
+        script = convert_all_numbers_in_script(raw_script)
+        desc = normalize_outdated_years(data.get("video_description", "").strip())
+        raw_tags = data.get("specific_tags", []) + DEFAULT_BASE_TAGS
+        tags = sanitize_youtube_tags(raw_tags)
+
+        j_type = str(data.get("job_type", "govt")).strip().lower()
+        if j_type not in ["govt", "non-govt"]:
+            j_type = "non-govt" if any(w in clean_title.lower() for w in ["কোম্পানি", "লিমিটেড", "limited", "ltd", "private", "বেসরকারি"]) else "govt"
+
+        l1 = data.get("line1_text") or (f"{vac_str} নিয়োগ বিজ্ঞপ্তি" if vac_str else "বিশাল নিয়োগ বিজ্ঞপ্তি")
+        l2 = data.get("line2_text") or data.get("top_text") or org_name
+        l3 = data.get("line3_text") or data.get("sub_text") or (qual_str if qual_str else "এসএসসি পাস")
+        l4 = data.get("line4_text") or data.get("row1_text") or "বেতন স্কেল ১২,০০০ টাকা"
+        l5 = data.get("line5_text") or data.get("bot_text") or "অনলাইনে আবেদন শুরু"
+
+        thumb_meta = {
+            "job_type": j_type,
+            "line1_text": strip_unwanted_chars(l1),
+            "line2_text": strip_unwanted_chars(l2),
+            "line3_text": strip_unwanted_chars(l3),
+            "line4_text": strip_unwanted_chars(l4),
+            "line5_text": strip_unwanted_chars(l5)
+        }
+        return opt_title, script, thumb_meta, desc, tags
 
     # ------------------ [১ম ধাপ: Ollama ক্লাউডের সুপার মডেল রোটেশন] ------------------
     ollama_keys = get_all_ollama_keys()
@@ -244,7 +273,7 @@ Return strictly valid JSON:
             o_key = ollama_keys[cur_k_idx]
             k_num = cur_k_idx + 1
             headers = {"Content-Type": "application/json", "Authorization": f"Bearer {o_key}"}
-            
+
             for model_name in OLLAMA_MODELS:
                 print(f"🤖 Attempting Ollama Key #{k_num}/{total_o_keys} (Model: '{model_name}') for '{clean_title[:40]}'...")
                 payload = {
@@ -257,30 +286,10 @@ Return strictly valid JSON:
                     if resp.status_code == 200:
                         raw_content = resp.json().get("message", {}).get("content", "").strip()
                         data = parse_json_safely(raw_content)
-                        if data and data.get("optimized_title"):
-                            opt_title = normalize_outdated_years(data.get("optimized_title").strip()[:100])
-                            raw_script = normalize_outdated_years(re.sub(r'[\r\n]+', ' ', data.get("voiceover_script", "").strip()))
-                            script = convert_all_numbers_in_script(raw_script)
-                            desc = normalize_outdated_years(data.get("video_description", "").strip())
-                            raw_tags = data.get("specific_tags", []) + DEFAULT_BASE_TAGS
-                            tags = sanitize_youtube_tags(raw_tags)
-                            
-                            gen_bot = data.get("bot_text", "").strip()
-                            if not gen_bot or "আবেদনের নিয়ম ও বিস্তারিত" in gen_bot:
-                                gen_bot = f"({vac_str}) বিশাল সার্কুলার" if vac_str else "আবেদনের শেষ তারিখ ও নিয়ম"
-
-                            thumb_meta = {
-                                "top_text": strip_unwanted_chars(data.get("top_text", org_name)),
-                                "row1_text": strip_unwanted_chars(data.get("row1_text", "জরুরি নিয়োগ")),
-                                "row2_text": strip_unwanted_chars(data.get("row2_text", vac_str if vac_str else "বিশাল নিয়োগ")),
-                                "sub_text": strip_unwanted_chars(data.get("sub_text", qual_str if qual_str else "SSC/HSC পাশ")),
-                                "bot_text": strip_unwanted_chars(gen_bot)
-                            }
+                        if data and data.get("voiceover_script"):
                             save_ollama_index(cur_k_idx, total_o_keys)
                             print(f"✨ Successfully Generated via Ollama Key #{k_num} ('{model_name}')!")
-                            return opt_title, script, thumb_meta, desc, tags
-                    else:
-                        print(f"⚠️ Ollama Key #{k_num} ('{model_name}') returned {resp.status_code}. Trying next model...")
+                            return extract_final_payload(data)
                 except Exception as oe:
                     print(f"⚠️ Network error on Key #{k_num} ('{model_name}'): {oe}")
 
@@ -308,29 +317,9 @@ Return strictly valid JSON:
                     if resp.status_code == 200:
                         raw_content = resp.json()['choices'][0]['message']['content']
                         data = parse_json_safely(raw_content)
-                        if data and data.get("optimized_title"):
-                            opt_title = normalize_outdated_years(data.get("optimized_title").strip()[:100])
-                            raw_script = normalize_outdated_years(re.sub(r'[\r\n]+', ' ', data.get("voiceover_script", "").strip()))
-                            script = convert_all_numbers_in_script(raw_script)
-                            desc = normalize_outdated_years(data.get("video_description", "").strip())
-                            raw_tags = data.get("specific_tags", []) + DEFAULT_BASE_TAGS
-                            tags = sanitize_youtube_tags(raw_tags)
-
-                            gen_bot = data.get("bot_text", "").strip()
-                            if not gen_bot or "আবেদনের নিয়ম ও বিস্তারিত" in gen_bot:
-                                gen_bot = f"({vac_str}) বিশাল সার্কুলার" if vac_str else "আবেদনের শেষ তারিখ ও নিয়ম"
-
-                            thumb_meta = {
-                                "top_text": strip_unwanted_chars(data.get("top_text", org_name)),
-                                "row1_text": strip_unwanted_chars(data.get("row1_text", "জরুরি নিয়োগ")),
-                                "row2_text": strip_unwanted_chars(data.get("row2_text", vac_str if vac_str else "বিশাল নিয়োগ")),
-                                "sub_text": strip_unwanted_chars(data.get("sub_text", qual_str if qual_str else "SSC/HSC পাশ")),
-                                "bot_text": strip_unwanted_chars(gen_bot)
-                            }
+                        if data and data.get("voiceover_script"):
                             print(f"✨ Successfully Generated via Groq AI ({g_model})!")
-                            return opt_title, script, thumb_meta, desc, tags
-                    else:
-                        print(f"⚠️ Groq Key #{g_idx} ('{g_model}') returned {resp.status_code}: {resp.text[:120]}")
+                            return extract_final_payload(data)
                 except Exception as ge:
                     print(f"⚠️ Groq exception on Key #{g_idx} ('{g_model}'): {ge}")
 
