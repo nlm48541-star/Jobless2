@@ -197,30 +197,39 @@ def parse_json_safely(raw_text):
     except Exception:
         return None
 
-def generate_job_content(title, img_paths):
+def generate_job_content(title, img_paths, article_text=""):
     clean_title = clean_title_for_display(title)
     words = clean_title.split()
     org_name = clean_title.split("নিয়োগ")[0].strip() if "নিয়োগ" in clean_title else " ".join(words[:min(3, len(words))])
     vac_str, qual_str = extract_vacancy_and_qual(clean_title)
 
-    prompt = f"""You are a professional Bengali YouTube SEO specialist, scriptwriter, and thumbnail strategist.
+    prompt = f"""You are a professional Bengali YouTube SEO specialist, scriptwriter, and circular auditor.
 Context:
 - Circular Title: "{clean_title}"
 - Detected Org: "{org_name}"
+- Article Text Context: "{article_text[:1200]}"
 
-CRITICAL INSTRUCTIONS:
-1. SCRIPT: Exactly 3 minutes (380 to 440 words). Continuous spoken Bengali. Do NOT mention any year in the script. All numbers must be in full Bengali words. WhatsApp call to action at the end without using 'ঘরে বসে'.
-2. JOB TYPE: Determine whether this is a government job ("govt") or private/non-government/company job ("non-govt").
-3. THUMBNAIL 5-LINE LAYOUT (STRICT FORMAT):
-   - "job_type": "govt" or "non-govt"
-   - "line1_text": 2-3 words hook (e.g. "{vac_str} নিয়োগ বিজ্ঞপ্তি" or "বিশাল নিয়োগ বিজ্ঞপ্তি" or "জরুরি নিয়োগ বিজ্ঞপ্তি")
-   - "line2_text": 2-3 words. Organization / Department Name in prominent Bengali (e.g. "{org_name}") - will be shown inside a colored box overlay!
-   - "line3_text": 2-3 words. Educational Qualification (e.g. "{qual_str if qual_str else 'এসএসসি পাস'}" or "স্নাতক পাস" or "৮ম শ্রেণি পাস")
-   - "line4_text": 2-4 words. Salary Scale or Key Benefit (e.g. "বেতন স্কেল ১২,০০০ টাকা" or "বেতন স্কেল ২২,০০০ টাকা" or "আকর্ষণীয় বেতন ও সুবিধা")
-   - "line5_text": 2-3 words. Deadline or CTA (e.g. "৩০ অক্টোবর পর্যন্ত" or "অনলাইনে আবেদন শুরু" or "আবেদনের শেষ তারিখ")
+CRITICAL AUDIT TASK:
+Examine the attached circular image(s) AND the article text carefully to determine how candidate applies:
+- "application_method":
+    - "online" -> Candidates apply via website/portal (e.g. teletalk.com.bd, web form, online portal).
+    - "offline" -> Candidates MUST send application by Postal Mail (ডাকযোগে), Courier (কুরিয়ার), or submit in person / physical office visit (সরাসরি অফিসে / হাতে হাতে জমা).
+- "offline_reason": Brief reason in Bengali if "offline" (e.g. "আবেদন ডাকযোগে প্রেরণের নির্দেশ").
+
+IF "application_method" IS "online", GENERATE FULL DETAILS:
+1. SCRIPT: Exactly 3 minutes (380 to 440 words). Continuous spoken Bengali. Do NOT mention any year.
+2. JOB TYPE: "govt" or "non-govt".
+3. THUMBNAIL 5-LINE LAYOUT:
+   - "line1_text": 2-3 words (e.g. "{vac_str} নিয়োগ বিজ্ঞপ্তি" or "বিশাল নিয়োগ বিজ্ঞপ্তি")
+   - "line2_text": 2-3 words. Org name (e.g. "{org_name}")
+   - "line3_text": 2-3 words. Qualification (e.g. "{qual_str if qual_str else 'এসএসসি পাস'}")
+   - "line4_text": 2-4 words. Salary (e.g. "বেতন স্কেল ১২,০০০ টাকা")
+   - "line5_text": 2-3 words. Deadline (e.g. "৩০ অক্টোবর পর্যন্ত")
 
 Return strictly valid JSON:
 {{
+  "application_method": "online", // or "offline"
+  "offline_reason": "",
   "job_type": "govt",
   "optimized_title": "...",
   "voiceover_script": "...",
@@ -236,6 +245,13 @@ Return strictly valid JSON:
     base64_images = [encode_image_base64(p) for p in img_paths[:3] if encode_image_base64(p)]
 
     def extract_final_payload(data):
+        app_method = str(data.get("application_method", "online")).strip().lower()
+        offline_reason = data.get("offline_reason", "ডাকযোগ / সরাসরি অফিসে আবেদনের নির্দেশ")
+
+        # অফলাইন আবেদন হলে সরাসরি ফ্ল্যাগ রিটার্ন করা
+        if app_method == "offline":
+            return None, None, {"is_offline": True, "reason": offline_reason}, None, None
+
         opt_title = normalize_outdated_years(data.get("optimized_title", clean_title).strip()[:100])
         raw_script = normalize_outdated_years(re.sub(r'[\r\n]+', ' ', data.get("voiceover_script", "").strip()))
         script = convert_all_numbers_in_script(raw_script)
@@ -254,6 +270,7 @@ Return strictly valid JSON:
         l5 = data.get("line5_text") or data.get("bot_text") or "অনলাইনে আবেদন শুরু"
 
         thumb_meta = {
+            "is_offline": False,
             "job_type": j_type,
             "line1_text": strip_unwanted_chars(l1),
             "line2_text": strip_unwanted_chars(l2),
@@ -279,16 +296,15 @@ Return strictly valid JSON:
                 payload = {
                     "model": model_name,
                     "messages": [{"role": "user", "content": prompt, "images": base64_images}],
-                    "stream": False, "options": {"temperature": 0.5}
+                    "stream": False, "options": {"temperature": 0.3}
                 }
                 try:
                     resp = requests.post(f"{OLLAMA_API_URL}/api/chat", headers=headers, json=payload, timeout=45)
                     if resp.status_code == 200:
                         raw_content = resp.json().get("message", {}).get("content", "").strip()
                         data = parse_json_safely(raw_content)
-                        if data and data.get("voiceover_script"):
+                        if data and ("application_method" in data or "voiceover_script" in data):
                             save_ollama_index(cur_k_idx, total_o_keys)
-                            print(f"✨ Successfully Generated via Ollama Key #{k_num} ('{model_name}')!")
                             return extract_final_payload(data)
                 except Exception as oe:
                     print(f"⚠️ Network error on Key #{k_num} ('{model_name}'): {oe}")
@@ -305,11 +321,11 @@ Return strictly valid JSON:
                 payload = {
                     "model": g_model,
                     "messages": [
-                        {"role": "system", "content": "You are a professional Bengali YouTube SEO and scriptwriter. Output strictly valid JSON only."},
+                        {"role": "system", "content": "You are a professional Bengali circular auditor. Output strictly valid JSON only."},
                         {"role": "user", "content": prompt}
                     ],
                     "response_format": {"type": "json_object"},
-                    "temperature": 0.5,
+                    "temperature": 0.3,
                     "max_tokens": 2000
                 }
                 try:
@@ -317,8 +333,7 @@ Return strictly valid JSON:
                     if resp.status_code == 200:
                         raw_content = resp.json()['choices'][0]['message']['content']
                         data = parse_json_safely(raw_content)
-                        if data and data.get("voiceover_script"):
-                            print(f"✨ Successfully Generated via Groq AI ({g_model})!")
+                        if data and ("application_method" in data or "voiceover_script" in data):
                             return extract_final_payload(data)
                 except Exception as ge:
                     print(f"⚠️ Groq exception on Key #{g_idx} ('{g_model}'): {ge}")
