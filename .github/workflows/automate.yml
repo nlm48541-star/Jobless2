@@ -10,14 +10,14 @@ concurrency:
   group: rss-automation-jobless
   cancel-in-progress: true
 
-# 🌟 হিস্টোরি ফাইল গিটহাবে স্বয়ংক্রিয় সেভ করার জন্য পারমিশন
+# 🌟 হিস্টোরি ও স্কিপ করা অফলাইন জব ফাইল গিটহাবে স্বয়ংক্রিয় পুশ করার পারমিশন
 permissions:
   contents: write
 
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 60 # অডিও জেনারেশন ও ভিডিও রেন্ডারিংয়ের জন্য নিরাপদ টাইমআউট
 
     steps:
       - name: Checkout repository
@@ -29,7 +29,7 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      # 🌟 বাংলা ফন্ট, টেক্সট রেন্ডারিং ইঞ্জিন ও FFmpeg ইনস্টল (Rclone বাদ দেওয়া হয়েছে)
+      # 🌟 বাংলা ফন্ট, টেক্সট রেন্ডারিং ইঞ্জিন ও FFmpeg ইনস্টল (Rclone পুরোপুরি বাদ)
       - name: Install System Dependencies (Fonts, FFmpeg)
         run: |
           sudo apt-get update
@@ -41,7 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 🌟 ভিডিও তৈরি এবং সরাসরি ইউটিউবে আপলোড (কোনো গুগল ড্রাইভ সিক্রেট লাগবে না)
+      # 🌟 সরাসরি ভিডিও তৈরি ও ইউটিউবে আপলোড (গুগল ড্রাইভের কোনো সিক্রেট লাগবে না)
       - name: Run Python Process (Video Creation & YouTube Upload)
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
@@ -60,12 +60,12 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python main.py
 
-      # 🌟 ডুপ্লিকেট রোধ: আপলোড হিস্টোরি রিপোজিটরিতে সেভ ও কমিট
-      - name: Save & Commit Upload History
+      # 🌟 ডুপ্লিকেট আপলোড এবং অফলাইন সার্কুলার হিস্টোরি গিটহাবে স্থায়ী সেভ ও কমিট
+      - name: Save & Commit Upload & Skip History
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add workspace/history.txt 2>/dev/null || true
-          git commit -m "Update upload history [skip ci]" || true
+          git add workspace/history.txt skipped_jobs.json 2>/dev/null || true
+          git commit -m "Update upload history & skipped offline circulars [skip ci]" || true
           git push || true
