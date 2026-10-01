@@ -80,7 +80,6 @@ def scrape_page_details(page_url):
             soup = BeautifulSoup(resp.text, 'html.parser')
             img_urls = extract_image_urls_from_html(resp.text, base_url=page_url)
             
-            # আর্টিকেলের টেক্সট অংশটুকু নেওয়া
             text_container = soup.find(['div', 'article'], class_=re.compile(r'(post-body|entry-content|post-content|article-body)', re.I))
             article_text = text_container.get_text(separator=" ", strip=True) if text_container else soup.get_text(separator=" ", strip=True)
             return img_urls, article_text[:3000]
@@ -144,7 +143,7 @@ def check_new_articles_and_prepare_folders():
                 if folder_title.lower() == "shorts" or not folder_title or folder_title in existing:
                     continue
 
-                # 🌟 [স্কিপ চেকিং]: পূর্বে আপলোড হয়েছে বা অফলাইন হওয়ায় বাদ পড়েছে এমন পোস্ট সরাসরি স্কিপ
+                # 🌟 পূর্বে আপলোড হয়েছে বা অফলাইন হওয়ায় বাদ পড়েছে এমন পোস্ট সরাসরি স্কিপ
                 if link.lower() in history_logs or raw_title.lower() in history_logs or folder_title.lower() in history_logs:
                     continue
                 if link.lower() in skipped_links:
@@ -200,7 +199,7 @@ def check_new_articles_and_prepare_folders():
                     shutil.rmtree(folder_path, ignore_errors=True)
                     continue
 
-                # টাইটেল, লিঙ্ক এবং আর্টিকেলের লেখা ফোল্ডারে সেভ
+                # ফাইল সংরক্ষণ
                 with open(os.path.join(folder_path, "title.txt"), "w", encoding="utf-8") as tf:
                     tf.write(raw_title)
                 if link:
