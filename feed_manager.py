@@ -6,24 +6,12 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 WORKSPACE_DIR = "workspace"
-SKIPPED_JOBS_FILE = "skipped_jobs.json"
 FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'bank', 'চলমান']
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
 }
-
-def load_skipped_job_links():
-    """পূর্বে বাদ দেওয়া অফলাইন সার্কুলারগুলোর লিঙ্ক লোড করে"""
-    if os.path.exists(SKIPPED_JOBS_FILE):
-        try:
-            with open(SKIPPED_JOBS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {k.strip().lower() for k in data.keys()}
-        except Exception:
-            pass
-    return set()
 
 def is_forbidden_article(text):
     if not text: return False
@@ -71,7 +59,6 @@ def extract_image_urls_from_html(html_content, base_url=""):
     return img_urls
 
 def scrape_page_details(page_url):
-    """ওয়েবপেজ থেকে ছবি ও আর্টিকেলের টেক্সট উভয়ই সংগ্রহ করে"""
     try:
         req_headers = HEADERS.copy()
         req_headers["Referer"] = page_url
@@ -79,19 +66,17 @@ def scrape_page_details(page_url):
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             img_urls = extract_image_urls_from_html(resp.text, base_url=page_url)
-            
             text_container = soup.find(['div', 'article'], class_=re.compile(r'(post-body|entry-content|post-content|article-body)', re.I))
             article_text = text_container.get_text(separator=" ", strip=True) if text_container else soup.get_text(separator=" ", strip=True)
-            return img_urls, article_text[:3000]
+            return img_urls, article_text[:4000]
     except Exception: pass
     return [], ""
 
 def download_image(url, output_path, referer_url=""):
     try:
         req_headers = HEADERS.copy()
-        if referer_url:
-            req_headers["Referer"] = referer_url
-        req = requests.get(url, headers=req_headers, timeout=15)
+        if referer_url: req_headers["Referer"] = referer_url
+        req = requests.get(url, headers=req_headers, timeout=20)
         if req.status_code == 200 and len(req.content) > 3000:
             with open(output_path, 'wb') as f:
                 f.write(req.content)
@@ -113,7 +98,6 @@ def check_new_articles_and_prepare_folders():
     time_limit = datetime.now() - timedelta(hours=24)
     existing = [f for f in os.listdir(WORKSPACE_DIR) if os.path.isdir(os.path.join(WORKSPACE_DIR, f))]
     
-    # ১. আপলোড হিস্টোরি রিড
     history_file = os.path.join(WORKSPACE_DIR, "history.txt")
     history_logs = set()
     if os.path.exists(history_file):
@@ -121,9 +105,6 @@ def check_new_articles_and_prepare_folders():
             with open(history_file, 'r', encoding='utf-8') as hf:
                 history_logs = {line.strip().lower() for line in hf if line.strip()}
         except Exception: pass
-
-    # ২. 🌟 পূর্বে বাদ দেওয়া অফলাইন পোস্টগুলোর তালিকা রিড
-    skipped_links = load_skipped_job_links()
 
     for feed_url in rss_links:
         try:
@@ -143,14 +124,10 @@ def check_new_articles_and_prepare_folders():
                 if folder_title.lower() == "shorts" or not folder_title or folder_title in existing:
                     continue
 
-                # 🌟 পূর্বে আপলোড হয়েছে বা অফলাইন হওয়ায় বাদ পড়েছে এমন পোস্ট সরাসরি স্কিপ
                 if link.lower() in history_logs or raw_title.lower() in history_logs or folder_title.lower() in history_logs:
-                    continue
-                if link.lower() in skipped_links:
                     continue
 
                 if is_forbidden_article(raw_title) or is_forbidden_article(folder_title):
-                    print(f"🚫 [FILTERED] Skipping '{folder_title}' (Forbidden keyword).")
                     continue
 
                 content = entry.content[0].value if hasattr(entry, 'content') else getattr(entry, 'summary', "")
@@ -177,7 +154,6 @@ def check_new_articles_and_prepare_folders():
                     shutil.rmtree(folder_path, ignore_errors=True)
                     continue
 
-                # ব্যানার রিমুভ (একাধিক ছবি থাকলে)
                 if len(downloaded_temp_files) > 1:
                     try:
                         with Image.open(downloaded_temp_files[0]) as first_img:
@@ -199,7 +175,6 @@ def check_new_articles_and_prepare_folders():
                     shutil.rmtree(folder_path, ignore_errors=True)
                     continue
 
-                # ফাইল সংরক্ষণ
                 with open(os.path.join(folder_path, "title.txt"), "w", encoding="utf-8") as tf:
                     tf.write(raw_title)
                 if link:
@@ -209,5 +184,5 @@ def check_new_articles_and_prepare_folders():
                     with open(os.path.join(folder_path, "article.txt"), "w", encoding="utf-8") as af:
                         af.write(article_body)
 
-                print(f"✅ Prepared New Article: {folder_title} ({final_img_count} Images)")
+                print(f"✅ Prepared New Circular: {folder_title} ({final_img_count} Images)")
                 existing.append(folder_title)
