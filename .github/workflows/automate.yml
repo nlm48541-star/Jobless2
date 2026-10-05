@@ -15,7 +15,7 @@ permissions:
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180 # ১০ মিনিটের দীর্ঘ ভিডিওর অডিও ও রেন্ডারিংয়ের জন্য পর্যাপ্ত টাইমআউট
 
     steps:
       - name: Checkout repository
@@ -37,26 +37,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Python Process (Video Creation & YouTube Upload)
+      - name: Run Python Process (10-Minute Video & YouTube Upload)
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
-          OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
+          OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: python main.py
 
-      # 🌟 হিস্টোরি, স্কিপ করা অফলাইন সার্কুলার ও এপিআই কি ট্র্যাকার গিটহাবে সেভ
       - name: Save & Commit History and API Key Trackers
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add workspace/history.txt skipped_jobs.json api_key_tracker.json 2>/dev/null || true
+          git add workspace/history.txt api_key_tracker.json 2>/dev/null || true
           git commit -m "Update upload history & active API key tracker [skip ci]" || true
           git push || true
