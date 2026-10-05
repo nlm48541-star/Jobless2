@@ -15,7 +15,7 @@ permissions:
 jobs:
   run-automation:
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # ১০ মিনিটের দীর্ঘ ভিডিওর অডিও ও রেন্ডারিংয়ের জন্য পর্যাপ্ত টাইমআউট
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
@@ -27,21 +27,42 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install System Dependencies (Fonts, FFmpeg)
+      # 🌟 Rclone, FFmpeg ও বাংলা ফন্ট ইনস্টল
+      - name: Install System Dependencies (Fonts, FFmpeg, Rclone)
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-beng fonts-beng-extra libraqm-dev libraqm0 libfribidi0 libharfbuzz0b ffmpeg
+          sudo apt-get install -y fonts-beng fonts-beng-extra libraqm-dev libraqm0 libfribidi0 libharfbuzz0b ffmpeg rclone
+
+      # 🌟 Rclone কনফিগারেশন সেটআপ
+      - name: Configure Rclone
+        shell: python
+        env:
+          RCLONE_CONF_DATA: ${{ secrets.RCLONE_CONF }}
+        run: |
+          import os
+          conf_data = os.environ.get('RCLONE_CONF_DATA', '').strip()
+          if conf_data:
+              config_path = os.path.expanduser('~/.config/rclone/rclone.conf')
+              os.makedirs(os.path.dirname(config_path), exist_ok=True)
+              with open(config_path, 'w', encoding='utf-8') as f:
+                  f.write(conf_data)
+              print("✅ Rclone configured successfully.")
+          else:
+              print("ℹ️ RCLONE_CONF is empty, running in local-only mode.")
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Python Process (10-Minute Video & YouTube Upload)
+      # 🌟 পাইথন এক্সিকিউশন (ম্যানুয়াল ড্রাইভ ও আরএসএস অটোমেশন)
+      - name: Run Python Process (Manual Drive & RSS Auto)
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          ENABLE_MANUAL_FOLDER: ${{ secrets.ENABLE_MANUAL_FOLDER }}
+          MANUAL_DRIVE_FOLDER_ID: ${{ secrets.MANUAL_DRIVE_FOLDER_ID }}
           OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
           GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
           CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
