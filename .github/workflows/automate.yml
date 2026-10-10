@@ -5,9 +5,10 @@ on:
     types: [rss_video_check] 
   workflow_dispatch: 
 
+# 🌟 কোনো অবস্থাতেই রানিং ভিডিও রেন্ডারিং ক্যানসেল হবে না
 concurrency:
   group: rss-automation-jobless
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -48,14 +49,14 @@ jobs:
                   f.write(conf_data)
               print("✅ Rclone configured successfully.")
           else:
-              print("ℹ️ RCLONE_CONF is empty, running in local-only mode.")
+              print("ℹ️ RCLONE_CONF is empty, running in RSS-only mode.")
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 🌟 পাইথন এক্সিকিউশন (ম্যানুয়াল ড্রাইভ ও আরএসএস অটোমেশন)
+      # 🌟 পাইথন রান
       - name: Run Python Process (Manual Drive & RSS Auto)
         env:
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
