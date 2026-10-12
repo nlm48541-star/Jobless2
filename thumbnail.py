@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 FONTS_DIR = "Fonts"
 PHOTOS_DIR = "Photos"
 
-# অনলাইন আবেদনের জন্য পূর্বের বিভাগীয় ব্যাকগ্রাউন্ড কনফিগ
+# অনলাইন আবেদনের জন্য বিভাগীয় ব্যাকগ্রাউন্ড কনফিগ
 BG_TEMPLATES = {
     "NonGov.png": {"max_text_x": 940, "theme_color": "#0e305d"},
     "Passport.png": {"max_text_x": 990, "theme_color": "#064a27"},
@@ -68,6 +68,10 @@ def find_background_for_circular(title_text, job_type="govt"):
         return os.path.join(PHOTOS_DIR, disk_files[default_f.lower()]), BG_TEMPLATES.get(default_f, {"max_text_x": 1135, "theme_color": "#01532b"})
     return None, {"max_text_x": 1050, "theme_color": "#01532b"}
 
+# =========================================================================
+# 🌟 বাংলা ও ইংরেজি বাইলিঙ্গুয়াল ফন্ট ইঞ্জিন (Tofu / Box সমস্যা সমাধান)
+# =========================================================================
+
 def get_bengali_font(size=80):
     candidates = [
         os.path.join(FONTS_DIR, "AkhandBengali-Extrabold.ttf"),
@@ -80,153 +84,230 @@ def get_bengali_font(size=80):
             except Exception: pass
     return ImageFont.load_default()
 
-def fit_font_size(text, max_w, max_h, start_size=200, min_size=60):
-    for s in range(start_size, min_size, -4):
-        font = get_bengali_font(s)
-        bbox = font.getbbox(text)
-        w = bbox[2] - bbox[0]
+def get_english_bold_font(size=80):
+    eng_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"
+    ]
+    for p in eng_paths:
+        if os.path.exists(p):
+            try: return ImageFont.truetype(p, size)
+            except Exception: pass
+    try: return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+    except Exception: return ImageFont.load_default()
+
+def split_text_by_script(text):
+    tokens = re.split(r'([A-Za-z0-9/&,.\-]+)', str(text))
+    segments = []
+    for t in tokens:
+        if not t: continue
+        is_eng = bool(re.match(r'^[A-Za-z0-9/&,.\-]+$', t))
+        segments.append((t, is_eng))
+    return segments
+
+def measure_mixed_text(text, font_size):
+    bn_f = get_bengali_font(font_size)
+    en_f = get_english_bold_font(font_size)
+    total_w, max_h = 0, 0
+    for seg_text, is_eng in split_text_by_script(text):
+        f = en_f if is_eng else bn_f
+        bbox = f.getbbox(seg_text)
+        total_w += (bbox[2] - bbox[0])
         h = bbox[3] - bbox[1]
+        if h > max_h: max_h = h
+    return total_w, max_h
+
+def get_best_fitted_mixed_font_size(text, max_w, max_h, start_size=150, min_size=40):
+    for fs in range(start_size, min_size, -3):
+        w, h = measure_mixed_text(text, fs)
         if w <= max_w and h <= max_h:
-            return font, w, h
-    return get_bengali_font(min_size), max_w, max_h
+            return fs, w, h
+    return min_size, max_w, max_h
+
+def draw_mixed_text_centered(draw, center_x, center_y, text, font_size, fill_color):
+    bn_f = get_bengali_font(font_size)
+    en_f = get_english_bold_font(font_size)
+    segments = split_text_by_script(text)
+    total_w = 0
+    seg_widths = []
+    for seg_text, is_eng in segments:
+        f = en_f if is_eng else bn_f
+        bbox = f.getbbox(seg_text)
+        w = bbox[2] - bbox[0]
+        seg_widths.append(w)
+        total_w += w
+
+    cur_x = center_x - (total_w // 2)
+    for (seg_text, is_eng), w in zip(segments, seg_widths):
+        f = en_f if is_eng else bn_f
+        draw.text((cur_x, center_y), seg_text, font=f, fill=fill_color, anchor="lm")
+        cur_x += w
 
 # =========================================================================
-# 🌟 ডেমো অনুরূপ স্পেশাল থাম্বনেইল রেন্ডারার (আবেদনপত্র তৈরি / ফরম পূরণ)
+# 🌟 ১. ডেমো অনুরূপ স্পেশাল থাম্বনেইল ("ফরম পূরণ" / "আবেদনপত্র তৈরি")
 # =========================================================================
 
-def render_demo_style_thumbnail(output_path, circular_img_path, org_name, badge_text, bg_color):
-    """
-    ডেমো ১ ও ২ এর হুবহু ডিজাইন:
-    বামে কালো বর্ডারযুক্ত সার্কুলার পেজ, ডানে সাদা টেক্সট ও নিচে হলুদ পিল ব্যাজ।
-    """
+def render_demo_style_thumbnail(output_path, circular_img_path, top_hook, org_name, badge_text, bg_color):
     W, H = 1920, 1080
     thumb = Image.new("RGB", (W, H), bg_color)
     draw = ImageDraw.Draw(thumb)
 
-    # ১. বাম পাশে সার্কুলারের পাতা স্থাপন (কালো স্ট্রোক ও ফ্রেম সহ)
+    # ১. বাম পাশে মূল সার্কুলার পাতা (কালো বর্ডার ও স্ট্রোক সহ)
     if circular_img_path and os.path.exists(circular_img_path):
         try:
             with Image.open(circular_img_path) as c_img:
                 c_img = c_img.convert("RGB")
-                
-                # ডকুমেন্টের অনুপাত ঠিক রেখে মার্জিন অনুযায়ী রিসাইজ
                 max_doc_w = 750
                 max_doc_h = 920
                 scale = min(max_doc_w / c_img.width, max_doc_h / c_img.height)
                 doc_w, doc_h = int(c_img.width * scale), int(c_img.height * scale)
                 doc_resized = c_img.resize((doc_w, doc_h), Image.LANCZOS)
 
-                # চারপাশের কালো স্ট্রোক (Border/Stroke)
+                # চারপাশের সলিড কালো স্ট্রোক (Border)
                 stroke_width = 8
                 doc_with_border = ImageOps.expand(doc_resized, border=stroke_width, fill="#000000")
 
-                # পেপার ড্রপ শ্যাডো / প্যাডিং
-                pos_x = 80
+                pos_x = 75
                 pos_y = (H - doc_with_border.height) // 2
                 thumb.paste(doc_with_border, (pos_x, pos_y))
         except Exception as e:
             print(f"⚠️ Circular paper render warning: {e}")
 
-    # ২. ডান পাশের টেক্সট এরিয়া (ডকুমেন্টের পর থেকে ডান প্রান্ত পর্যন্ত)
-    text_area_x_start = 860
+    # ২. ডান পাশের টেক্সট এরিয়া
+    text_area_x_start = 850
     text_area_w = W - text_area_x_start - 60
     center_text_x = text_area_x_start + (text_area_w // 2)
 
-    # প্রতিষ্ঠানের নামকে সুন্দরভাবে ১ বা ২ লাইনে বিন্যস্ত করা
+    # ৩. লাইন ১: শীর্ষ হুক (উজ্জ্বল হলুদ রঙে "জরুরী নিয়োগ বিজ্ঞপ্তি")
+    hook_text = top_hook if top_hook else "জরুরী নিয়োগ বিজ্ঞপ্তি"
+    fs_top, _, _ = get_best_fitted_mixed_font_size(hook_text, max_w=text_area_w - 60, max_h=110, start_size=105, min_size=55)
+    draw_mixed_text_centered(draw, center_text_x, 180, hook_text, fs_top, "#fedd00")
+
+    # ৪. লাইন ২: প্রতিষ্ঠানের নাম (মাঝখানের অংশে বড় সাদা টেক্সট)
     words = org_name.split()
-    if len(words) >= 2:
+    if len(words) >= 4:
         mid = len(words) // 2
         line1 = " ".join(words[:mid])
         line2 = " ".join(words[mid:])
+        
+        fs_l1, _, _ = get_best_fitted_mixed_font_size(line1, max_w=text_area_w - 40, max_h=150, start_size=155, min_size=70)
+        draw_mixed_text_centered(draw, center_text_x, 370, line1, fs_l1, "#ffffff")
+        
+        fs_l2, _, _ = get_best_fitted_mixed_font_size(line2, max_w=text_area_w - 40, max_h=150, start_size=155, min_size=70)
+        draw_mixed_text_centered(draw, center_text_x, 520, line2, fs_l2, "#ffffff")
     else:
-        line1 = org_name
-        line2 = ""
+        fs_org, _, _ = get_best_fitted_mixed_font_size(org_name, max_w=text_area_w - 40, max_h=230, start_size=165, min_size=75)
+        draw_mixed_text_centered(draw, center_text_x, 440, org_name, fs_org, "#ffffff")
 
-    # ৩. প্রতিষ্ঠানের নামের লাইন দুটি আঁকা (সাদা রঙ)
-    f1, _, h1 = fit_font_size(line1, max_w=text_area_w - 40, max_h=190, start_size=180, min_size=80)
-    y_cursor = 210
-    draw.text((center_text_x, y_cursor), line1, font=f1, fill="#ffffff", anchor="mm")
-    
-    if line2:
-        y_cursor += 170
-        f2, _, _ = fit_font_size(line2, max_w=text_area_w - 40, max_h=190, start_size=180, min_size=80)
-        draw.text((center_text_x, y_cursor), line2, font=f2, fill="#ffffff", anchor="mm")
-
-    # ৪. হলুদ পিল ব্যাজ (Yellow Pill Badge)
-    pill_w = min(text_area_w, 920)
+    # ৫. লাইন ৩: নিচে বড় উজ্জ্বল হলুদ পিল ব্যাজ (Pill Badge)
+    badge_fs, b_w, b_h = get_best_fitted_mixed_font_size(badge_text, max_w=text_area_w - 120, max_h=130, start_size=130, min_size=65)
+    pill_w = min(text_area_w, max(b_w + 140, 680))
     pill_h = 175
-    pill_y1 = 660
+    pill_y1 = 730
     pill_y2 = pill_y1 + pill_h
     pill_x1 = center_text_x - (pill_w // 2)
     pill_x2 = center_text_x + (pill_w // 2)
 
-    # উজ্জ্বল হলুদ ব্যাকগ্রাউন্ড (#ffd700 / #fbc02d)
-    yellow_color = "#fbc02d" if "ফরম" in badge_text else "#f9a825"
     draw.rounded_rectangle([pill_x1, pill_y1, pill_x2, pill_y2], radius=pill_h // 2, fill="#fedd00")
-
-    # পিল ব্যাজের ভেতরের লেখা (ব্যাকগ্রাউন্ডের সাথে মেলানো ডিপ রঙে)
-    badge_font, _, _ = fit_font_size(badge_text, max_w=pill_w - 80, max_h=pill_h - 40, start_size=130, min_size=60)
-    draw.text((center_text_x, (pill_y1 + pill_y2) // 2), badge_text, font=badge_font, fill=bg_color, anchor="mm")
+    draw_mixed_text_centered(draw, center_text_x, (pill_y1 + pill_y2) // 2, badge_text, badge_fs, bg_color)
 
     thumb.save(output_path, "JPEG", quality=100, subsampling=0)
-    print(f"✅ Generated Demo-Style Thumbnail: [{badge_text}] for '{org_name}'")
+    print(f"✅ Generated Demo Thumbnail: [{hook_text} | {org_name} | {badge_text}]")
 
 # =========================================================================
-# 🌟 মাস্টার থাম্বনেইল রাউটার
+# 🌟 ২. সাধারণ (অনলাইন আবেদন) থাম্বনেইল ফিক্স
 # =========================================================================
 
-def generate_dynamic_thumbnail(title, output_path, thumb_meta=None, circular_img_path=None):
-    if not thumb_meta: thumb_meta = {}
-    app_mode = thumb_meta.get("application_mode", "online").lower()
-    org_name = thumb_meta.get("org_name") or title.split("নিয়োগ")[0].strip()[:35]
-
-    # ১. যদি "ফরম পূরণ" হয় (ডেমো ২ এর হুবহু নীল ব্যাকগ্রাউন্ড ডিজাইন)
-    if app_mode == "form_fill":
-        render_demo_style_thumbnail(
-            output_path=output_path,
-            circular_img_path=circular_img_path,
-            org_name=org_name,
-            badge_text="ফরম পূরণ",
-            bg_color="#003580" # ডেমো ২ এর রয়্যাল নেভি ব্লু
-        )
-        return
-
-    # ২. যদি "আবেদনপত্র তৈরি" হয় (ডেমো ১ এর হুবহু সবুজ ব্যাকগ্রাউন্ড ডিজাইন)
-    elif app_mode == "letter_write":
-        render_demo_style_thumbnail(
-            output_path=output_path,
-            circular_img_path=circular_img_path,
-            org_name=org_name,
-            badge_text="আবেদনপত্র তৈরি",
-            bg_color="#004d25" # ডেমো ১ এর ফরেস্ট গ্রিন
-        )
-        return
-
-    # ৩. যদি সরাসরি "অনলাইন আবেদন" হয় (পূর্বের সাধারণ ৫-লাইনের ডিজাইন)
+def render_standard_online_thumbnail(title, output_path, thumb_meta):
+    W, H = 1920, 1080
     bg_path, bg_cfg = find_background_for_circular(title, job_type=thumb_meta.get("job_type", "govt"))
     if bg_path and os.path.exists(bg_path):
-        base_img = Image.open(bg_path).convert("RGB").resize((1920, 1080), Image.LANCZOS)
+        base_img = Image.open(bg_path).convert("RGB").resize((W, H), Image.LANCZOS)
     else:
-        base_img = Image.new("RGB", (1920, 1080), "#ffffff")
+        base_img = Image.new("RGB", (W, H), "#ffffff")
 
     draw = ImageDraw.Draw(base_img)
     theme_color = bg_cfg.get("theme_color", "#01532b")
-    center_x = (90 + bg_cfg.get("max_text_x", 1110)) // 2
-    f_main = get_bengali_font(100)
+    max_text_x = bg_cfg.get("max_text_x", 1110)
+    margin_left = 90
+    available_w = max_text_x - margin_left
+    center_x = (margin_left + max_text_x) // 2
 
     l1 = thumb_meta.get("line1_text", "জরুরি নিয়োগ বিজ্ঞপ্তি")
-    l2 = thumb_meta.get("line2_text", org_name)
+    l2 = thumb_meta.get("line2_text") or thumb_meta.get("org_name") or title.split("নিয়োগ")[0].strip()[:35]
     l3 = thumb_meta.get("line3_text", "বিভিন্ন পদে আবেদন")
     l4 = thumb_meta.get("line4_text", "বেতন স্কেল ও সুযোগ-সুবিধা")
     l5 = thumb_meta.get("line5_text", "অনলাইনে আবেদন শুরু")
 
-    draw.text((center_x, 165), l1, font=f_main, fill=theme_color, anchor="mm")
-    draw.rounded_rectangle([center_x - 450, 265, center_x + 450, 440], radius=28, fill=theme_color)
-    draw.text((center_x, 352), l2, font=f_main, fill="#ffffff", anchor="mm")
-    draw.text((center_x, 515), l3, font=f_main, fill="#000000", anchor="mm")
-    draw.text((center_x, 660), l4, font=f_main, fill="#000000", anchor="mm")
-    draw.rounded_rectangle([center_x - 300, 775, center_x + 300, 895], radius=60, fill=theme_color)
-    draw.text((center_x, 835), l5, font=f_main, fill="#ffffff", anchor="mm")
+    # লাইন ১: শীর্ষ হুক (থিম কালার)
+    fs1, _, _ = get_best_fitted_mixed_font_size(l1, max_w=available_w - 40, max_h=120, start_size=115, min_size=55)
+    draw_mixed_text_centered(draw, center_x, 150, l1, fs1, theme_color)
+
+    # 🌟 লাইন ২ ফিক্স: ওভারলে উপরে ওঠানো হয়েছে এবং প্রস্থ ডায়নামিক করা হয়েছে
+    fs2, w2, h2 = get_best_fitted_mixed_font_size(l2, max_w=available_w - 80, max_h=125, start_size=120, min_size=50)
+    box_w2 = min(available_w, w2 + 90) # লেখার সাইজ অনুযায়ী ওভারলে বড় হবে
+    box_h2 = max(h2 + 45, 150)
+    box_y1 = 235  # উপরে তোলা হলো যাতে ৩য় লাইনের ওপর না আসে
+    box_y2 = box_y1 + box_h2
+    box_center_y = (box_y1 + box_y2) // 2
+
+    draw.rounded_rectangle([center_x - (box_w2 // 2), box_y1, center_x + (box_w2 // 2), box_y2], radius=26, fill=theme_color)
+    draw_mixed_text_centered(draw, center_x, box_center_y, l2, fs2, "#ffffff")
+
+    # 🌟 লাইন ৩: ৩য় লাইনের জন্য সম্পূর্ণ ক্লিয়ার ফাঁকা জায়গা (y = 515)
+    fs3, _, _ = get_best_fitted_mixed_font_size(l3, max_w=available_w - 40, max_h=125, start_size=125, min_size=55)
+    draw_mixed_text_centered(draw, center_x, 515, l3, fs3, "#000000")
+
+    # লাইন ৪: বেতন স্কেল
+    fs4, _, _ = get_best_fitted_mixed_font_size(l4, max_w=available_w - 40, max_h=115, start_size=105, min_size=50)
+    draw_mixed_text_centered(draw, center_x, 660, l4, fs4, "#000000")
+
+    # 🌟 লাইন ৫ ফিক্স: নিচের পিল ওভারলের প্রস্থ লেখার দৈর্ঘ্যের সাথে ডায়নামিক করা হয়েছে
+    fs5, w5, h5 = get_best_fitted_mixed_font_size(l5, max_w=available_w - 80, max_h=100, start_size=82, min_size=42)
+    pill_w5 = min(available_w, w5 + 100) # লেখা অনুযায়ী পিল ওভারলে বড় হবে
+    pill_h5 = max(h5 + 35, 110)
+    pill_y1 = 780
+    pill_y2 = pill_y1 + pill_h5
+    pill_center_y = (pill_y1 + pill_y2) // 2
+
+    draw.rounded_rectangle([center_x - (pill_w5 // 2), pill_y1, center_x + (pill_w5 // 2), pill_y2], radius=pill_h5 // 2, fill=theme_color)
+    draw_mixed_text_centered(draw, center_x, pill_center_y, l5, fs5, "#ffffff")
 
     base_img.save(output_path, "JPEG", quality=100, subsampling=0)
-    print(f"✅ Generated Standard Online Thumbnail for '{title[:35]}'")
+    print(f"✅ Generated Fixed Standard Thumbnail for '{title[:35]}'")
+
+# =========================================================================
+# 🌟 মাস্টার রাউটার
+# =========================================================================
+
+def generate_dynamic_thumbnail(title, output_path, thumb_meta=None, circular_img_path=None):
+    if not thumb_meta: thumb_meta = {}
+    app_mode = str(thumb_meta.get("application_mode", "online")).lower()
+    org_name = thumb_meta.get("org_name") or title.split("নিয়োগ")[0].strip()[:35]
+    top_hook = thumb_meta.get("line1_text", "জরুরী নিয়োগ বিজ্ঞপ্তি")
+
+    # ফরম পূরণ হলে (ডেমো ২ এর রয়্যাল নেভি ব্লু)
+    if app_mode == "form_fill":
+        render_demo_style_thumbnail(
+            output_path=output_path,
+            circular_img_path=circular_img_path,
+            top_hook=top_hook,
+            org_name=org_name,
+            badge_text="ফরম পূরণ",
+            bg_color="#003580"
+        )
+    # আবেদনপত্র তৈরি হলে (ডেমো ১ এর ফরেস্ট গ্রিন)
+    elif app_mode == "letter_write":
+        render_demo_style_thumbnail(
+            output_path=output_path,
+            circular_img_path=circular_img_path,
+            top_hook=top_hook,
+            org_name=org_name,
+            badge_text="আবেদনপত্র তৈরি",
+            bg_color="#004d25"
+        )
+    # অনলাইনে আবেদন হলে (সংশোধিত স্বাভাবিক মেথড)
+    else:
+        render_standard_online_thumbnail(title, output_path, thumb_meta)
