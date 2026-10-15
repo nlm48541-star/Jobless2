@@ -11,8 +11,7 @@ def parse_multiline_keys(env_var_name):
 def load_tracker():
     if os.path.exists(TRACKER_FILE):
         try:
-            with open(TRACKER_FILE, "r", encoding="utf-8") as f: 
-                return json.load(f)
+            with open(TRACKER_FILE, "r", encoding="utf-8") as f: return json.load(f)
         except Exception: pass
     return {}
 
@@ -40,9 +39,32 @@ def clean_script_for_speech(raw_text):
     text = re.sub(r'[\<\>\{\}\(\)\@\$\^\&\+\=\_\\\/]', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
 
+def split_text_into_chunks(text, max_chars=400):
+    raw_parts = re.split(r'([।\?\!\n]+)', text)
+    chunks = []
+    current = ""
+    for p in raw_parts:
+        current += p
+        if any(sym in p for sym in ['।', '?', '!', '\n']) or len(current) >= max_chars:
+            if current.strip(): chunks.append(current.strip())
+            current = ""
+    if current.strip(): chunks.append(current.strip())
+    return chunks
+
 # =========================================================================
-# 🌟 ১. Gemini 3.8 Flash TTS
+# 🌟 ভয়েস ইঞ্জিন প্রোভাইডার (Gemini ➔ ElevenLabs ➔ Edge TTS)
 # =========================================================================
+
+def synthesize_chunk_gemini(chunk_text, client, voice_id):
+    interaction = client.interactions.create(
+        model="gemini-3.8-flash-tts",
+        input=[{"type": "user_input", "content": [{"type": "text", "text": chunk_text}]}],
+        response_format={"type": "audio"},
+        generation_config={"speech_config": [{"voice": voice_id}]}
+    )
+    if hasattr(interaction, 'output_audio') and hasattr(interaction.output_audio, 'data'):
+        return base64.b64decode(interaction.output_audio.data)
+    return None
 
 def synthesize_with_gemini(speech_text, output_audio_path):
     keys = parse_multiline_keys("GEMINI_API_KEYS") or parse_multiline_keys("GEMINI_API_KEY")
@@ -50,37 +72,37 @@ def synthesize_with_gemini(speech_text, output_audio_path):
     if total == 0: return False
 
     voice_id = os.environ.get("GEMINI_VOICE_ID", "voice_z3e67k0f8p8c").strip()
-    try: 
-        from google import genai
-    except ImportError: 
-        return False
+    try: from google import genai
+    except ImportError: return False
 
+    chunks = split_text_into_chunks(speech_text, max_chars=450)
     start_idx = get_audio_start_index("gemini", total)
+
     for offset in range(total):
         cur_idx = (start_idx + offset) % total
         api_key = keys[cur_idx]
         try:
             client = genai.Client(api_key=api_key)
-            interaction = client.interactions.create(
-                model="gemini-3.8-flash-tts",
-                input=[{"type": "user_input", "content": [{"type": "text", "text": speech_text}]}],
-                response_format={"type": "audio"},
-                generation_config={"speech_config": [{"voice": voice_id}]}
-            )
-            if hasattr(interaction, 'output_audio') and hasattr(interaction.output_audio, 'data'):
-                audio_bytes = base64.b64decode(interaction.output_audio.data)
-                if len(audio_bytes) > 1000:
-                    with open(output_audio_path, "wb") as f: 
-                        f.write(audio_bytes)
-                    set_audio_index("gemini", cur_idx, total)
-                    return True
+            audio_bytes_list = []
+            failed = False
+
+            for c in chunks:
+                b = synthesize_chunk_gemini(c, client, voice_id)
+                if b and len(b) > 500:
+                    audio_bytes_list.append(b)
+                else:
+                    failed = True; break
+
+            if not failed and len(audio_bytes_list) == len(chunks):
+                with open(output_audio_path, "wb") as f:
+                    for ab in audio_bytes_list: f.write(ab)
+                set_audio_index("gemini", cur_idx, total)
+                print("  ✅ [SUCCESS] 10-Minute Voice generated via Gemini 3.8 Flash TTS!")
+                return True
         except Exception: pass
         set_audio_index("gemini", cur_idx + 1, total)
-    return False
 
-# =========================================================================
-# 🌟 ২. ElevenLabs API
-# =========================================================================
+    return False
 
 def synthesize_with_elevenlabs(speech_text, output_audio_path):
     keys = parse_multiline_keys("ELEVENLABS_API_KEYS")
@@ -89,26 +111,35 @@ def synthesize_with_elevenlabs(speech_text, output_audio_path):
 
     voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM").strip()
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
+    chunks = split_text_into_chunks(speech_text, max_chars=400)
     start_idx = get_audio_start_index("elevenlabs", total)
+
     for offset in range(total):
         cur_idx = (start_idx + offset) % total
         headers = {"Accept": "audio/mpeg", "Content-Type": "application/json", "xi-api-key": keys[cur_idx]}
-        payload = {"text": speech_text, "model_id": "eleven_multilingual_v2"}
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=60)
-            if resp.status_code == 200 and len(resp.content) > 1000:
-                with open(output_audio_path, "wb") as f: 
-                    f.write(resp.content)
-                set_audio_index("elevenlabs", cur_idx, total)
-                return True
-        except Exception: pass
-        set_audio_index("elevenlabs", cur_idx + 1, total)
-    return False
+        audio_bytes_list = []
+        failed = False
 
-# =========================================================================
-# 🌟 ৩. Microsoft Edge Neural Fallback
-# =========================================================================
+        for c in chunks:
+            payload = {"text": c, "model_id": "eleven_multilingual_v2"}
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=60)
+                if resp.status_code == 200 and len(resp.content) > 500:
+                    audio_bytes_list.append(resp.content)
+                else:
+                    failed = True; break
+            except Exception:
+                failed = True; break
+
+        if not failed and len(audio_bytes_list) == len(chunks):
+            with open(output_audio_path, "wb") as f:
+                for ab in audio_bytes_list: f.write(ab)
+            set_audio_index("elevenlabs", cur_idx, total)
+            print("  ✅ [SUCCESS] Generated via ElevenLabs API!")
+            return True
+        set_audio_index("elevenlabs", cur_idx + 1, total)
+
+    return False
 
 def synthesize_with_edge_fallback(speech_text, output_audio_path):
     try:
@@ -117,43 +148,31 @@ def synthesize_with_edge_fallback(speech_text, output_audio_path):
             c = edge_tts.Communicate(speech_text, "bn-BD-PradeepNeural", rate="+0%", pitch="+0Hz")
             await c.save(output_audio_path)
         asyncio.run(_make())
-        return os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 1000
-    except Exception: return False
-
-# =========================================================================
-# 🌟 এক্সপোর্ট করা মূল ফাংশনসমূহ (Exported Functions)
-# =========================================================================
-
-def synthesize_single_speech(text, output_path):
-    """একটি নির্দিষ্ট টেক্সটের জন্য অডিও তৈরি করে"""
-    speech_text = clean_script_for_speech(text)
-    if not speech_text: return False
-    if synthesize_with_gemini(speech_text, output_path): return True
-    if synthesize_with_elevenlabs(speech_text, output_path): return True
-    if synthesize_with_edge_fallback(speech_text, output_path): return True
-    
-    # লোকাল মিউজিক ব্যাকআপ
-    for f in ["sample_voice.mp3", "sample_voice.wav", "Photos/bg_music.mp3"]:
-        if os.path.exists(f) and os.path.getsize(f) > 1000:
-            shutil.copyfile(f, output_path)
+        if os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 1000:
+            print("  ✅ [SUCCESS] Generated via Microsoft Edge Neural Engine!")
             return True
+    except Exception as e:
+        print(f"  ⚠️ Edge fallback error: {e}")
     return False
 
-def generate_segmented_audio_pipeline(segments, tmp_dir):
-    """প্রতিটি সেগমেন্টের অডিও তৈরি করে সঠিক টাইমস্ট্যাম্প সহ রিটার্ন করে"""
-    audio_segments = []
-    for idx, seg in enumerate(segments, start=1):
-        seg_audio_file = os.path.join(tmp_dir, f"seg_{idx}.mp3")
-        print(f"🎙️ [Audio Engine] Generating audio for Segment {idx}/{len(segments)}: '{seg['title'][:30]}'...")
-        
-        success = synthesize_single_speech(seg["script"], seg_audio_file)
-        if success and os.path.exists(seg_audio_file):
-            audio_segments.append({
-                "audio_path": seg_audio_file,
-                "box_2d": seg["box_2d"],
-                "image_index": seg.get("image_index", 1)
-            })
-        else:
-            print(f"⚠️ Failed audio for segment {idx}, continuing...")
+# =========================================================================
+# 🌟 মাস্টার অডিও পাইপলাইন
+# =========================================================================
 
-    return audio_segments
+def generate_voiceover_audio_pipeline(text, output_audio_path):
+    speech_text = clean_script_for_speech(text)
+    if not speech_text: return False
+
+    print(f"\n🎙️ [Audio Engine] Generating ~10-minute audio ({len(speech_text.split())} words)...")
+
+    if synthesize_with_gemini(speech_text, output_audio_path): return True
+    if synthesize_with_elevenlabs(speech_text, output_audio_path): return True
+    if synthesize_with_edge_fallback(speech_text, output_audio_path): return True
+
+    for f in ["sample_voice.mp3", "sample_voice.wav", "Photos/bg_music.mp3"]:
+        if os.path.exists(f) and os.path.getsize(f) > 1000:
+            shutil.copyfile(f, output_audio_path)
+            print(f"  ✅ Copied local fallback audio '{f}'!")
+            return True
+
+    return False
