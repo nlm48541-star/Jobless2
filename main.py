@@ -9,16 +9,13 @@ from feed_manager import (
     WORKSPACE_DIR
 )
 from ai_service import generate_job_content, convert_all_numbers_in_script, detect_application_mode_from_text
-from audio_engine import generate_segmented_audio_pipeline
+from audio_engine import generate_voiceover_audio_pipeline
 from thumbnail import generate_dynamic_thumbnail
-from video_editor import render_matched_video
+from video_editor import render_video_slideshow
 from youtube_uploader import get_youtube_service, upload_to_youtube
 
 TMP_DIR = "temp_assets"
 HISTORY_FILE = os.path.join(WORKSPACE_DIR, "history.txt")
-
-# 🌟 ১০ মিনিটের ভিডিও হওয়ার কারণে প্রতি রানে সর্বোচ্চ ২টি ভিডিও প্রসেস হবে
-# এতে ১৫-২৫ মিনিটের মধ্যে রান সফলভাবে শেষ হবে এবং টাইমআউট বা ক্যানসেল হবে না
 MAX_VIDEOS_PER_RUN = 2
 
 def add_to_history(entry_text):
@@ -59,7 +56,7 @@ def empty_google_drive_folder(folder_id):
         print(f"⚠️ Drive cleanup notice: {e}")
 
 # =========================================================================
-# 🌟 ১. ম্যানুয়াল গুগল ড্রাইভ টাস্ক
+# 🌟 ১. ম্যানুয়াল গুগল ড্রাইভ হ্যান্ডলার
 # =========================================================================
 
 def process_manual_drive_task(yt):
@@ -71,7 +68,6 @@ def process_manual_drive_task(yt):
 
     rclone_conf = os.path.expanduser('~/.config/rclone/rclone.conf')
     if not os.path.exists(rclone_conf):
-        print("ℹ️ Rclone config file not found. Skipping manual drive scan.")
         return False
 
     manual_dir = "workspace_manual"
@@ -85,17 +81,11 @@ def process_manual_drive_task(yt):
             f"--drive-root-folder-id={folder_id}",
             "--fast-list"
         ], capture_output=True, text=True, timeout=120)
-        if res.returncode != 0:
-            print(f"ℹ️ Rclone notice: {res.stderr[:120]}")
-            return False
-    except Exception as e:
-        print(f"ℹ️ Rclone check skipped: {e}")
-        return False
+        if res.returncode != 0: return False
+    except Exception: return False
 
     drive_files = [f for f in os.listdir(manual_dir) if not f.startswith(".")]
-    if not drive_files:
-        print("ℹ️ Google Drive folder is currently EMPTY. Proceeding to RSS...")
-        return False
+    if not drive_files: return False
 
     print(f"🎯 [MANUAL DRIVE] Detected {len(drive_files)} file(s): {drive_files}")
 
@@ -127,7 +117,6 @@ def process_manual_drive_task(yt):
         user_script = None
         if script_file and os.path.exists(script_file):
             with open(script_file, "r", encoding="utf-8") as sf: user_script = sf.read().strip()
-            print("📝 [CUSTOM SCRIPT] Using provided 'script.txt' directly.")
 
         raw_title = "জরুরি নিয়োগ বিজ্ঞপ্তি"
         if title_file and os.path.exists(title_file):
@@ -135,64 +124,44 @@ def process_manual_drive_task(yt):
         elif user_script:
             raw_title = user_script.split("\n")[0][:80].strip()
 
-        if not img_files:
-            print("❌ No circular images found in manual folder.")
-            return False
-
+        if not img_files: return False
         if not os.path.exists(TMP_DIR): os.makedirs(TMP_DIR, exist_ok=True)
 
         if user_script:
             video_title = raw_title
+            voiceover_script = convert_all_numbers_in_script(user_script)
             video_desc = user_script[:500] + "\n\nআবেদন করতে যোগাযোগ করুন আমাদের হোয়াটসঅ্যাপে।"
             video_tags = ['চাকরির সার্কুলার', 'চাকরির খবর', 'job circular']
-            
-            paragraphs = [p.strip() for p in user_script.split("\n\n") if p.strip()]
-            if len(paragraphs) < 3:
-                paragraphs = [p.strip() for p in re.split(r'[।\n]+', user_script) if len(p.strip()) > 30]
-            
-            segments = []
-            for p_idx, para in enumerate(paragraphs, start=1):
-                clean_chunk = convert_all_numbers_in_script(para)
-                segments.append({
-                    "title": f"অংশ {p_idx}",
-                    "script": clean_chunk,
-                    "image_index": 1,
-                    "box_2d": [100, 0, 900, 1000]
-                })
-
             app_mode = detect_application_mode_from_text(user_script + " " + scraped_text)
-            thumb_meta = {
-                "application_mode": app_mode,
-                "org_name": raw_title.split("নিয়োগ")[0].strip()[:35],
-                "job_type": "govt"
-            }
+            thumb_meta = {"application_mode": app_mode, "org_name": raw_title.split("নিয়োগ")[0].strip()[:35], "job_type": "govt"}
         else:
-            opt_title, _, thumb_meta, video_desc, video_tags, segments = generate_job_content(
+            opt_title, voiceover_script, thumb_meta, video_desc, video_tags = generate_job_content(
                 raw_title, img_files, article_text=scraped_text
             )
             video_title = opt_title
 
-        if not segments: return False
+        if not voiceover_script: return False
 
-        audio_segments = generate_segmented_audio_pipeline(segments, TMP_DIR)
-        if not audio_segments: return False
+        # অডিও তৈরি
+        gen_audio_path = os.path.join(TMP_DIR, "manual_voice.mp3")
+        if os.path.exists(gen_audio_path): os.remove(gen_audio_path)
+        if not generate_voiceover_audio_pipeline(voiceover_script, gen_audio_path): return False
 
-        final_thumb_path = None
+        # থাম্বনেইল
         first_circular_img = img_files[0] if img_files else None
-
         if custom_thumb and os.path.exists(custom_thumb):
             final_thumb_path = custom_thumb
         else:
             gen_thumb = os.path.join(TMP_DIR, "thumbnail.jpg")
             if os.path.exists(gen_thumb): os.remove(gen_thumb)
-            generate_dynamic_thumbnail(
-                raw_title, gen_thumb, thumb_meta=thumb_meta, circular_img_path=first_circular_img
-            )
+            generate_dynamic_thumbnail(raw_title, gen_thumb, thumb_meta=thumb_meta, circular_img_path=first_circular_img)
             final_thumb_path = gen_thumb
 
+        # স্ক্রলিং ভিডিও রেন্ডারিং
         out_video_file = os.path.join(TMP_DIR, "manual_final.mp4")
         if os.path.exists(out_video_file): os.remove(out_video_file)
-        render_matched_video(audio_segments, img_files, out_video_file)
+        print("🎬 Rendering Smooth Scrolling Video for Manual Task...")
+        render_video_slideshow(gen_audio_path, img_files, out_video_file)
 
         upload_success = upload_to_youtube(
             yt, out_video_file, video_title, final_thumb_path,
@@ -200,15 +169,13 @@ def process_manual_drive_task(yt):
         )
 
         if upload_success:
-            print("🎉 [MANUAL SUCCESS] Video uploaded to YouTube!")
             add_to_history(video_title)
             if article_link: add_to_history(article_link)
             empty_google_drive_folder(folder_id)
             shutil.rmtree(manual_dir, ignore_errors=True)
             return True
 
-    except Exception as me:
-        print(f"❌ Error in manual drive task: {me}")
+    except Exception:
         traceback.print_exc()
 
     return False
@@ -223,13 +190,11 @@ def process_ready_videos(yt):
     if not os.path.exists(TMP_DIR): os.makedirs(TMP_DIR, exist_ok=True)
 
     folders = [f for f in sorted(os.listdir(WORKSPACE_DIR)) if os.path.isdir(os.path.join(WORKSPACE_DIR, f)) and f.lower() != "shorts"]
-    
     processed_count = 0
 
     for folder_name in folders:
-        # 🌟 ব্যাচ লিমিট: এক রানে সর্বোচ্চ ২টি ১০ মিনিটের ভিডিও হবে
         if processed_count >= MAX_VIDEOS_PER_RUN:
-            print(f"\n⏸️ Batch limit ({MAX_VIDEOS_PER_RUN} videos) reached for this run. Remaining circulars will process in next hourly run.\n")
+            print(f"\n⏸️ Batch limit ({MAX_VIDEOS_PER_RUN} videos) reached. Remaining will process in next hourly run.\n")
             break
 
         folder_path = os.path.join(WORKSPACE_DIR, folder_name)
@@ -266,21 +231,24 @@ def process_ready_videos(yt):
 
             print(f"\n========== Processing [{processed_count+1}/{MAX_VIDEOS_PER_RUN}]: {folder_name} ==========")
 
-            opt_title, _, thumb_meta, video_desc, video_tags, segments = generate_job_content(
+            opt_title, voiceover_script, thumb_meta, video_desc, video_tags = generate_job_content(
                 raw_title, img_files, article_text=article_text
             )
 
-            if not segments:
-                print(f"⚠️ Could not generate segments for '{folder_name}'. Skipping...")
+            if not voiceover_script:
+                print(f"⚠️ Could not generate script for '{folder_name}'. Skipping...")
                 continue
 
             video_title = opt_title
 
-            audio_segments = generate_segmented_audio_pipeline(segments, TMP_DIR)
-            if not audio_segments:
+            # অডিও তৈরি
+            gen_audio_path = os.path.join(TMP_DIR, "voiceover.mp3")
+            if os.path.exists(gen_audio_path): os.remove(gen_audio_path)
+            if not generate_voiceover_audio_pipeline(voiceover_script, gen_audio_path):
                 print("❌ Audio generation failed.")
                 continue
 
+            # থাম্বনেইল তৈরি
             first_circular_img = img_files[0] if img_files else None
             thumbnail_path = os.path.join(TMP_DIR, "thumbnail.jpg")
             if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
@@ -289,10 +257,12 @@ def process_ready_videos(yt):
                 raw_title, thumbnail_path, thumb_meta=thumb_meta, circular_img_path=first_circular_img
             )
 
+            # স্ক্রলিং ভিডিও রেন্ডারিং
             out_video_file = os.path.join(TMP_DIR, "final_out.mp4")
             if os.path.exists(out_video_file): os.remove(out_video_file)
 
-            render_matched_video(audio_segments, img_files, out_video_file)
+            print("🎬 Rendering Smooth Scrolling Video for Slideshow...")
+            render_video_slideshow(gen_audio_path, img_files, out_video_file)
             
             upload_success = upload_to_youtube(
                 yt, out_video_file, video_title, 
@@ -307,7 +277,7 @@ def process_ready_videos(yt):
                 processed_count += 1
                 print(f"✅ Video Uploaded & Local Folder Cleared: '{folder_name}'\n")
 
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
 
 # =========================================================================
@@ -345,28 +315,17 @@ if __name__ == "__main__":
     try:
         yt_service = get_youtube_service()
 
-        # ১. জরুরি ম্যানুয়াল ড্রাইভ
-        try:
-            process_manual_drive_task(yt_service)
-        except Exception:
-            traceback.print_exc()
+        try: process_manual_drive_task(yt_service)
+        except Exception: traceback.print_exc()
 
-        # ২. নিয়মিত আরএসএস
-        try:
-            check_new_articles_and_prepare_folders()
-        except Exception:
-            traceback.print_exc()
+        try: check_new_articles_and_prepare_folders()
+        except Exception: traceback.print_exc()
 
-        try:
-            process_ready_videos(yt_service)
-        except Exception:
-            traceback.print_exc()
+        try: process_ready_videos(yt_service)
+        except Exception: traceback.print_exc()
 
-        # ৩. শর্টস
-        try:
-            process_shorts_folder(yt_service)
-        except Exception:
-            traceback.print_exc()
+        try: process_shorts_folder(yt_service)
+        except Exception: traceback.print_exc()
 
     except Exception:
         traceback.print_exc()
