@@ -4,59 +4,41 @@ import numpy as np
 from PIL import Image
 from moviepy.editor import AudioFileClip, VideoClip, concatenate_videoclips, ImageClip, CompositeVideoClip
 
-def crop_and_pan_box(pil_img, box_2d, target_w=1920, target_h=1080):
+def make_video_frame(img_path, duration, target_w=1920, target_h=1080):
     """
-    এআই এর দেওয়া বাউন্ডিং বক্স অনুযায়ী বিজ্ঞপ্তির নির্দিষ্ট অংশ কেটে ফুল স্ক্রিনে আনে
+    নিয়োগ বিজ্ঞপ্তির পাতাটি পুরো অডিওর সময় অনুযায়ী ওপর থেকে নিচ পর্যন্ত স্মুথ স্ক্রল করবে
     """
-    img_w, img_h = pil_img.size
-    ymin, xmin, ymax, xmax = box_2d
+    pil_img = Image.open(img_path).convert("RGB")
+    w, h = pil_img.size
+    ratio = w / h
+    target_ratio = target_w / target_h
 
-    # নরম্যালাইজড 0-1000 স্কেল থেকে পিক্সেল স্কেল
-    y1 = int((ymin / 1000.0) * img_h)
-    x1 = int((xmin / 1000.0) * img_w)
-    y2 = int((ymax / 1000.0) * img_h)
-    x2 = int((xmax / 1000.0) * img_w)
+    # ১৬:৯ ফুল এইচডি অনুপাতে স্কেলিং
+    if ratio >= target_ratio: 
+        new_h = target_h
+        new_w = int((target_h / h) * w)
+    else: 
+        new_w = target_w
+        new_h = int((target_w / w) * h)
 
-    # মার্জিন ও সেফটি চেকিং
-    pad_y = int((y2 - y1) * 0.15)
-    pad_x = int((x2 - x1) * 0.08)
-    crop_y1 = max(0, y1 - pad_y)
-    crop_x1 = max(0, x1 - pad_x)
-    crop_y2 = min(img_h, y2 + pad_y)
-    crop_x2 = min(img_w, x2 + pad_x)
+    if new_w < target_w: 
+        new_w = target_w
+        new_h = int((new_w / w) * h)
+    if new_h < target_h: 
+        new_h = target_h
+        new_w = int((new_h / h) * w)
 
-    if (crop_x2 - crop_x1) < 100 or (crop_y2 - crop_y1) < 80:
-        crop_x1, crop_y1, crop_x2, crop_y2 = 0, 0, img_w, img_h
+    img_np = np.array(pil_img.resize((new_w, new_h), Image.LANCZOS))
+    pil_img.close()
 
-    cropped = pil_img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-    cw, ch = cropped.size
+    max_y_offset = max(0, new_h - target_h)
+    max_x_offset = max(0, new_w - target_w)
 
-    # ১৬:৯ অনুপাতে ক্যানভাসে বসানো
-    scale = min(target_w / cw, target_h / ch)
-    nw, nh = int(cw * scale), int(ch * scale)
-    resized = cropped.resize((nw, nh), Image.LANCZOS)
-
-    canvas = Image.new("RGB", (target_w, target_h), (245, 245, 248))
-    canvas.paste(resized, ((target_w - nw) // 2, (target_h - nh) // 2))
-    return canvas
-
-def make_synchronized_clip(img_path, box_2d, duration, target_w=1920, target_h=1080):
-    with Image.open(img_path) as raw_img:
-        img_rgb = raw_img.convert("RGB")
-        frame_canvas = crop_and_pan_box(img_rgb, box_2d, target_w, target_h)
-        base_np = np.array(frame_canvas)
-
-    # স্মুথ কেন-বার্নস সাবটল জুম ইফেক্ট (Ken Burns Dynamic Motion)
     def frame_getter(t):
         prog = min(1.0, max(0.0, t / duration if duration > 0 else 0))
-        zoom = 1.0 + (0.04 * prog) # মৃদু ৪% জুম যাতে ভিডিও জীবন্ত মনে হয়
-        zh, zw = int(target_h * zoom), int(target_w * zoom)
-        
-        # পিল দিয়ে রিসাইজ
-        zoomed = Image.fromarray(base_np).resize((zw, zh), Image.BILINEAR)
-        crop_x = (zw - target_w) // 2
-        crop_y = (zh - target_h) // 2
-        return np.array(zoomed.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h)))
+        y_start = int(prog * max_y_offset)
+        x_start = int(prog * max_x_offset)
+        return img_np[y_start : y_start + target_h, x_start : x_start + target_w]
 
     return VideoClip(frame_getter, duration=duration)
 
@@ -78,7 +60,7 @@ def apply_front_overlay(main_clip, target_w=1920, target_h=1080):
                 pad = 30
                 avail_w = max(1, target_w - sw - 2 * pad)
                 avail_h = max(1, target_h - sh - 2 * pad)
-                speed_x, speed_y = 20.0, 15.0
+                speed_x, speed_y = 22.0, 16.0
 
                 def pos(t):
                     x = (speed_x * t) % (2 * avail_w)
@@ -92,35 +74,31 @@ def apply_front_overlay(main_clip, target_w=1920, target_h=1080):
             except Exception: pass
     return main_clip
 
-def render_matched_video(audio_segments, img_files, output_video_path):
+def render_video_slideshow(audio_path, img_files, out_file):
     """
-    অডিও এবং বাউন্ডিং বক্স মিলিয়ে ১০ মিনিটের ফুল এইচডি ভিডিও তৈরি করে
+    পুরো অডিওর সাথে ছবিগুলোর স্মুথ স্ক্রলিং ভিডিও রেন্ডার করে
     """
-    clips = []
-    for seg in audio_segments:
-        audio_clip = AudioFileClip(seg["audio_path"])
-        duration = audio_clip.duration
-        
-        img_idx = min(len(img_files), max(1, seg.get("image_index", 1))) - 1
-        target_img = img_files[img_idx]
+    if not img_files:
+        raise ValueError("No images provided for slideshow rendering.")
 
-        v_clip = make_synchronized_clip(target_img, seg["box_2d"], duration)
-        v_clip = v_clip.set_audio(audio_clip)
-        clips.append(v_clip)
+    audio_clip = AudioFileClip(audio_path)
+    per_img_duration = audio_clip.duration / len(img_files)
 
-    final_video = concatenate_videoclips(clips)
+    clips = [make_video_frame(img, per_img_duration) for img in img_files]
+    final_video = concatenate_videoclips(clips).set_audio(audio_clip)
     final_video = apply_front_overlay(final_video)
 
     final_video.write_videofile(
-        output_video_path,
+        out_file,
         fps=30,
         codec="libx264",
         audio_codec="aac",
         audio_bitrate="192k",
-        threads=4,
+        threads=2,
         preset="ultrafast",
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         logger=None
     )
     final_video.close()
+    audio_clip.close()
     for c in clips: c.close()
