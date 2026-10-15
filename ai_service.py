@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-import os, json, re, base64, requests
+import os, json, re, requests
 from datetime import datetime
-from PIL import Image
 
 TRACKER_FILE = "api_key_tracker.json"
 OLLAMA_API_URL = os.environ.get("OLLAMA_API_URL", "https://api.ollama.com").rstrip("/")
 
-# 🌟 মডেল প্রায়োরিটি (OpenRouter ১ম, Ollama লাস্ট)
 OPENROUTER_MODELS = [
     "google/gemini-2.0-flash-001",
     "meta-llama/llama-3.3-70b-instruct",
@@ -15,10 +13,6 @@ OPENROUTER_MODELS = [
 GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 CEREBRAS_MODELS = ["llama3.3-70b", "llama3.1-8b"]
 OLLAMA_MODELS = ["gemma4:31b", "gemma4", "gpt-oss:120b"]
-
-# =========================================================================
-# 🌟 কি-ট্র্যাকার ও রোটেশন হেল্পার
-# =========================================================================
 
 def parse_multiline_keys(env_var_name):
     raw = os.environ.get(env_var_name, "").strip()
@@ -47,10 +41,6 @@ def set_platform_index(platform_name, next_idx, total_keys):
     t = load_tracker()
     t[f"{platform_name}_index"] = next_idx % total_keys
     save_tracker(t)
-
-# =========================================================================
-# 🌟 সংখ্যা থেকে বাংলা কথায় রূপান্তর হেল্পার (Number to Words)
-# =========================================================================
 
 BN_NUMS = {
     0: 'শূন্য', 1: 'এক', 2: 'দুই', 3: 'তিন', 4: 'চার', 5: 'পাঁচ', 6: 'ছয়', 7: 'সাত', 8: 'আট', 9: 'নয়', 10: 'দশ',
@@ -104,29 +94,19 @@ def convert_all_numbers_in_script(text):
     if not text: return ""
     text = re.sub(r'(\d+),(\d+)', r'\1\2', text)
     text = re.sub(r'([০-৯]+),([০-৯]+)', r'\1\2', text)
-
     def phone_repl(m):
         raw_phone = m.group(0)
         digits = re.findall(r'[0-9০-৯]', raw_phone)
         return ' '.join(DIGIT_TO_ENG_BN.get(d, d) for d in digits)
-
     text = re.sub(r'(\+?(?:88|৮৮)?\s*0?1[0-9০-৯]{8,10})', phone_repl, text)
-
     def num_repl(m):
         num_str = m.group(0)
         try:
             val = en_bn_to_int(num_str)
             return number_to_bangla_words(val)
-        except Exception:
-            return num_str
-
+        except Exception: return num_str
     text = re.sub(r'[0-9০-৯]+', num_repl, text)
-    text = re.sub(r'ঘরে\s*বসে\s*', '', text)
     return text
-
-# =========================================================================
-# 🌟 সাধারণ ক্লিনআপ হেল্পার
-# =========================================================================
 
 def clean_title_for_display(title):
     clean = title.split('|')[0].split('||')[0].strip()
@@ -147,32 +127,21 @@ def parse_json_safely(raw_text):
         return json.loads(raw_text)
     except Exception: return None
 
-# =========================================================================
-# 🌟 আবেদন পদ্ধতি স্বয়ংক্রিয় শনাক্তকরণ (ফরম পূরণ / আবেদনপত্র তৈরি / অনলাইন)
-# =========================================================================
-
 def detect_application_mode_from_text(article_text):
     t = str(article_text).lower()
     has_offline = any(k in t for k in ["ডাকযোগ", "কুরিয়ার", "কুরিয়ার", "বরাবর পাঠাতে", "খামের উপর", "অফিসে জমা", "হাতে হাতে"])
-    
     if any(k in t for k in ["ফরম পূরণ", "নির্ধারিত ফরম", "আবেদন ফরম", "ফরম ডাউনলোড"]):
         return "form_fill"
     if any(k in t for k in ["আবেদনপত্র তৈরি", "সাদা কাগজে আবেদন", "লিখিত আবেদনপত্র", "হাতে লেখা আবেদন"]):
         return "letter_write"
     if has_offline:
         return "form_fill" if "ফরম" in t else "letter_write"
-        
     return "online"
-
-# =========================================================================
-# 🌟 মাস্টার স্ক্রিপ্ট ও সেগমেন্ট জেনারেটর (আর্টিকেল টেক্সট ভিত্তিক)
-# =========================================================================
 
 def generate_job_content(title, img_paths=None, article_text=""):
     clean_title = clean_title_for_display(title)
     words = clean_title.split()
     org_name = clean_title.split("নিয়োগ")[0].strip() if "নিয়োগ" in clean_title else " ".join(words[:min(3, len(words))])
-    
     initial_mode = detect_application_mode_from_text(article_text)
 
     prompt = f"""You are a professional Bengali job circular specialist and TV presenter.
@@ -187,21 +156,20 @@ Full Article Text Content:
 
 CRITICAL SCRIPT & METADATA RULES:
 1. APPLICATION METHOD AUDIT:
-   Read the article content carefully to determine how the candidate must apply:
-   - "form_fill": Candidate must download or fill out a prescribed application form (নির্ধারিত ফরম পূরণ করে জমা/ডাকযোগে পাঠানো).
-   - "letter_write": Candidate must write a formal application letter on white paper (সাদা কাগজে আবেদনপত্র লিখে ডাকযোগে পাঠানো).
-   - "online": Candidate applies directly online through a website portal (e.g. teletalk or official website).
+   - "form_fill": Prescribed form fill-up (নির্ধারিত ফরম পূরণ করে জমা/ডাকযোগে পাঠানো).
+   - "letter_write": Written application letter (সাদা কাগজে আবেদনপত্র লিখে ডাকযোগে পাঠানো).
+   - "online": Apply online directly via web portal.
 
-2. TITLE, DESCRIPTION & TAGS REQUIREMENT:
-   - If "form_fill": The YouTube title MUST include the phrase 'ফরম পূরণ' (e.g. "{org_name} নিয়োগ বিজ্ঞপ্তি | ফরম পূরণ করার নিয়ম"). Tags & description must also emphasize 'ফরম পূরণ'.
-   - If "letter_write": The YouTube title MUST include the phrase 'আবেদনপত্র তৈরি' (e.g. "{org_name} নিয়োগ বিজ্ঞপ্তি | আবেদনপত্র তৈরি করার নিয়ম"). Tags & description must also emphasize 'আবেদনপত্র তৈরি'.
+2. TITLE, DESCRIPTION & TAGS:
+   - If "form_fill": The title MUST include 'ফরম পূরণ'.
+   - If "letter_write": The title MUST include 'আবেদনপত্র তৈরি'.
    - If "online": Standard online circular title.
 
 3. SCRIPT INSTRUCTIONS:
-   - Generate a 10-MINUTE LONG detailed analysis script (At least 1350 words).
-   - EXCLUSIVELY EXPLAIN THE POSTS: Duties of each role, required qualifications, GPA/grades, vacancies, salary grade, and benefits.
-   - DO NOT explain the application process in the body.
-   - CALL TO ACTION AT THE END:
+   - Generate a continuous 10-MINUTE LONG spoken Bengali script (At least 1350 to 1500 words).
+   - Deeply explain every single post/position: Daily duties, qualifications, GPA/grades, vacancies, salary grade, and institutional allowances.
+   - STRICTLY DO NOT explain the application process in the body.
+   - MANDATORY CALL TO ACTION AT THE END:
      "আবেদনটি করতে চাইলে অথবা আপনার ফরম পূরণ ও আবেদনপত্র তৈরি করিয়ে নিতে স্ক্রিনে বা ডেসক্রিপশনে থাকা হোয়াটসঅ্যাপ নাম্বারে এখনই মেসেজ দিন।"
 
 Return strictly valid JSON:
@@ -210,25 +178,10 @@ Return strictly valid JSON:
   "org_name": "{org_name}",
   "job_type": "govt",
   "optimized_title": "...",
+  "voiceover_script": "...",
   "video_description": "...",
   "specific_tags": ["..."],
-  "segments": [
-    {{
-      "segment_title": "ভূমিকা",
-      "script_chunk": "...",
-      "box_2d": [0, 0, 300, 1000]
-    }},
-    {{
-      "segment_title": "পদসমূহের বিবরণ",
-      "script_chunk": "...",
-      "box_2d": [250, 0, 850, 1000]
-    }},
-    {{
-      "segment_title": "সমাপনী ও হোয়াটসঅ্যাপ কল টু অ্যাকশন",
-      "script_chunk": "...",
-      "box_2d": [750, 0, 1000, 1000]
-    }}
-  ]
+  "line1_text": "জরুরী নিয়োগ বিজ্ঞপ্তি"
 }}"""
 
     def extract_final_payload(data):
@@ -237,8 +190,6 @@ Return strictly valid JSON:
             app_mode = initial_mode
 
         opt_title = normalize_outdated_years(data.get("optimized_title", clean_title).strip()[:100])
-        
-        # টাইটেলে বাধ্যতামূলক 'ফরম পূরণ' বা 'আবেদনপত্র তৈরি' যুক্ত করা
         if app_mode == "form_fill" and "ফরম পূরণ" not in opt_title:
             opt_title = f"{opt_title} | ফরম পূরণ"[:100]
         elif app_mode == "letter_write" and "আবেদনপত্র তৈরি" not in opt_title:
@@ -250,24 +201,17 @@ Return strictly valid JSON:
         elif app_mode == "letter_write": raw_tags += ['আবেদনপত্র তৈরি', 'চাকরির আবেদনপত্র']
         tags = [re.sub(r'\s+', ' ', t).strip()[:50] for t in raw_tags if t][:20]
 
+        raw_script = normalize_outdated_years(data.get("voiceover_script", "").strip())
+        converted_script = convert_all_numbers_in_script(raw_script)
+
         thumb_meta = {
             "application_mode": app_mode,
             "org_name": data.get("org_name", org_name),
-            "job_type": data.get("job_type", "govt")
+            "job_type": data.get("job_type", "govt"),
+            "line1_text": data.get("line1_text", "জরুরী নিয়োগ বিজ্ঞপ্তি")
         }
 
-        clean_segments = []
-        for seg in data.get("segments", []):
-            chunk = normalize_outdated_years(seg.get("script_chunk", "").strip())
-            converted = convert_all_numbers_in_script(chunk)
-            if converted:
-                clean_segments.append({
-                    "title": seg.get("segment_title", "পদের বিবরণ"),
-                    "script": converted,
-                    "box_2d": seg.get("box_2d", [150, 0, 850, 1000])
-                })
-
-        return opt_title, "", thumb_meta, desc, tags, clean_segments
+        return opt_title, converted_script, thumb_meta, desc, tags
 
     # OpenRouter ➔ Groq ➔ Cerebras ➔ Ollama
     openrouter_keys = parse_multiline_keys("OPENROUTER_API_KEYS")
@@ -282,13 +226,12 @@ Return strictly valid JSON:
                     resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=90)
                     if resp.status_code == 200:
                         data = parse_json_safely(resp.json()['choices'][0]['message']['content'])
-                        if data and data.get("segments"):
+                        if data and data.get("voiceover_script"):
                             set_platform_index("openrouter", cur_idx, len(openrouter_keys))
                             return extract_final_payload(data)
                 except Exception: pass
             set_platform_index("openrouter", cur_idx + 1, len(openrouter_keys))
 
-    # Groq ফলব্যাক
     groq_keys = parse_multiline_keys("GROQ_API_KEYS")
     if groq_keys:
         for k in groq_keys:
@@ -298,7 +241,7 @@ Return strictly valid JSON:
                 resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=60)
                 if resp.status_code == 200:
                     data = parse_json_safely(resp.json()['choices'][0]['message']['content'])
-                    if data and data.get("segments"): return extract_final_payload(data)
+                    if data and data.get("voiceover_script"): return extract_final_payload(data)
             except Exception: pass
 
-    return clean_title, "", {"application_mode": initial_mode, "org_name": org_name}, "", [], []
+    return clean_title, "", {"application_mode": initial_mode, "org_name": org_name}, "", []
