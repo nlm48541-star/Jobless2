@@ -1,200 +1,37 @@
 # -*- coding: utf-8 -*-
-import os, json, re, shutil, traceback, subprocess
+import os, shutil, traceback
+from PIL import Image
+
 from feed_manager import (
     check_new_articles_and_prepare_folders,
-    clean_filename,
     is_forbidden_article,
-    scrape_page_details,
-    download_image,
+    scrape_article_content_and_images,
+    add_to_history,
     WORKSPACE_DIR
 )
-from ai_service import generate_job_content, convert_all_numbers_in_script, detect_application_mode_from_text
-from audio_engine import generate_voiceover_audio_pipeline
+from ai_service import generate_job_content
+from audio_engine import generate_voiceover_batch_pipeline
 from thumbnail import generate_dynamic_thumbnail
 from video_editor import render_video_slideshow
 from youtube_uploader import get_youtube_service, upload_to_youtube
+from manual_processor import prepare_manual_drive_job, finalize_manual_drive_job
 
 TMP_DIR = "temp_assets"
-HISTORY_FILE = os.path.join(WORKSPACE_DIR, "history.txt")
 MAX_VIDEOS_PER_RUN = 2
 
-def add_to_history(entry_text):
-    if not entry_text or not str(entry_text).strip(): return
-    clean_val = str(entry_text).strip()
-    existing_records = set()
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as hf:
-                existing_records = {line.strip().lower() for line in hf if line.strip()}
-        except Exception: pass
 
-    if clean_val.lower() not in existing_records:
-        try:
-            os.makedirs(WORKSPACE_DIR, exist_ok=True)
-            with open(HISTORY_FILE, "a", encoding="utf-8") as hf:
-                hf.write(f"{clean_val}\n")
-            print(f"📝 [HISTORY] Saved: '{clean_val[:60]}'")
-        except Exception: pass
-
-def empty_google_drive_folder(folder_id):
-    print(f"🧹 [DRIVE CLEANUP] Emptying Google Drive Folder (ID: {folder_id})...")
-    try:
-        subprocess.run([
-            "rclone", "delete", "gdrive:",
-            f"--drive-root-folder-id={folder_id}",
-            "--drive-use-trash=false",
-            "--fast-list"
-        ], check=True, timeout=120)
-
-        subprocess.run([
-            "rclone", "rmdirs", "gdrive:",
-            f"--drive-root-folder-id={folder_id}",
-            "--leave-root"
-        ], timeout=60)
-        print("✅ Google Drive folder emptied successfully!")
-    except Exception as e:
-        print(f"⚠️ Drive cleanup notice: {e}")
-
-# =========================================================================
-# 🌟 ১. ম্যানুয়াল গুগল ড্রাইভ হ্যান্ডলার
-# =========================================================================
-
-def process_manual_drive_task(yt):
-    enable_manual = os.environ.get("ENABLE_MANUAL_FOLDER", "false").strip().lower() == "true"
-    folder_id = os.environ.get("MANUAL_DRIVE_FOLDER_ID", "").strip()
-
-    if not enable_manual or not folder_id:
-        return False
-
-    rclone_conf = os.path.expanduser('~/.config/rclone/rclone.conf')
-    if not os.path.exists(rclone_conf):
-        return False
-
-    manual_dir = "workspace_manual"
-    if os.path.exists(manual_dir): shutil.rmtree(manual_dir, ignore_errors=True)
-    os.makedirs(manual_dir, exist_ok=True)
-
-    print(f"\n📥 [MANUAL DRIVE] Checking Drive folder (ID: {folder_id})...")
-    try:
-        res = subprocess.run([
-            "rclone", "sync", "gdrive:", manual_dir,
-            f"--drive-root-folder-id={folder_id}",
-            "--fast-list"
-        ], capture_output=True, text=True, timeout=120)
-        if res.returncode != 0: return False
-    except Exception: return False
-
-    drive_files = [f for f in os.listdir(manual_dir) if not f.startswith(".")]
-    if not drive_files: return False
-
-    print(f"🎯 [MANUAL DRIVE] Detected {len(drive_files)} file(s): {drive_files}")
-
-    try:
-        script_file, link_file, custom_thumb, title_file = None, None, None, None
-        img_files = []
-
-        for f in drive_files:
-            fl = f.lower()
-            fp = os.path.join(manual_dir, f)
-            if fl == "script.txt": script_file = fp
-            elif fl == "link.txt": link_file = fp
-            elif fl == "title.txt": title_file = fp
-            elif fl in ["thumbnail.png", "thumbnail.jpg", "thumbnail.jpeg"]: custom_thumb = fp
-            elif fl.endswith(('.jpg', '.jpeg', '.png', '.webp')): img_files.append(fp)
-
-        scraped_text, article_link = "", ""
-        if link_file and os.path.exists(link_file):
-            with open(link_file, "r", encoding="utf-8") as lf: article_link = lf.read().strip()
-            if article_link:
-                scraped_imgs, page_body = scrape_page_details(article_link)
-                scraped_text = page_body
-                if not img_files and scraped_imgs:
-                    for s_idx, s_url in enumerate(scraped_imgs[:3], start=1):
-                        tgt_p = os.path.join(manual_dir, f"scraped_{s_idx}.jpg")
-                        if download_image(s_url, tgt_p, referer_url=article_link):
-                            img_files.append(tgt_p)
-
-        user_script = None
-        if script_file and os.path.exists(script_file):
-            with open(script_file, "r", encoding="utf-8") as sf: user_script = sf.read().strip()
-
-        raw_title = "জরুরি নিয়োগ বিজ্ঞপ্তি"
-        if title_file and os.path.exists(title_file):
-            with open(title_file, "r", encoding="utf-8") as tf: raw_title = tf.read().strip()
-        elif user_script:
-            raw_title = user_script.split("\n")[0][:80].strip()
-
-        if not img_files: return False
-        if not os.path.exists(TMP_DIR): os.makedirs(TMP_DIR, exist_ok=True)
-
-        if user_script:
-            video_title = raw_title
-            voiceover_script = convert_all_numbers_in_script(user_script)
-            video_desc = user_script[:500] + "\n\nআবেদন করতে যোগাযোগ করুন আমাদের হোয়াটসঅ্যাপে।"
-            video_tags = ['চাকরির সার্কুলার', 'চাকরির খবর', 'job circular']
-            app_mode = detect_application_mode_from_text(user_script + " " + scraped_text)
-            thumb_meta = {"application_mode": app_mode, "org_name": raw_title.split("নিয়োগ")[0].strip()[:35], "job_type": "govt"}
-        else:
-            opt_title, voiceover_script, thumb_meta, video_desc, video_tags = generate_job_content(
-                raw_title, img_files, article_text=scraped_text
-            )
-            video_title = opt_title
-
-        if not voiceover_script: return False
-
-        # অডিও তৈরি
-        gen_audio_path = os.path.join(TMP_DIR, "manual_voice.mp3")
-        if os.path.exists(gen_audio_path): os.remove(gen_audio_path)
-        if not generate_voiceover_audio_pipeline(voiceover_script, gen_audio_path): return False
-
-        # থাম্বনেইল
-        first_circular_img = img_files[0] if img_files else None
-        if custom_thumb and os.path.exists(custom_thumb):
-            final_thumb_path = custom_thumb
-        else:
-            gen_thumb = os.path.join(TMP_DIR, "thumbnail.jpg")
-            if os.path.exists(gen_thumb): os.remove(gen_thumb)
-            generate_dynamic_thumbnail(raw_title, gen_thumb, thumb_meta=thumb_meta, circular_img_path=first_circular_img)
-            final_thumb_path = gen_thumb
-
-        # স্ক্রলিং ভিডিও রেন্ডারিং
-        out_video_file = os.path.join(TMP_DIR, "manual_final.mp4")
-        if os.path.exists(out_video_file): os.remove(out_video_file)
-        print("🎬 Rendering Smooth Scrolling Video for Manual Task...")
-        render_video_slideshow(gen_audio_path, img_files, out_video_file)
-
-        upload_success = upload_to_youtube(
-            yt, out_video_file, video_title, final_thumb_path,
-            description=video_desc, tags=video_tags, schedule_upload=False
-        )
-
-        if upload_success:
-            add_to_history(video_title)
-            if article_link: add_to_history(article_link)
-            empty_google_drive_folder(folder_id)
-            shutil.rmtree(manual_dir, ignore_errors=True)
-            return True
-
-    except Exception:
-        traceback.print_exc()
-
-    return False
-
-# =========================================================================
-# 🌟 ২. নিয়মিত আরএসএস অটোমেশন
-# =========================================================================
-
-def process_ready_videos(yt):
-    print("\nScanning Workspace folders for Scheduled Videos...")
-    if not os.path.exists(WORKSPACE_DIR): return
-    if not os.path.exists(TMP_DIR): os.makedirs(TMP_DIR, exist_ok=True)
+def prepare_workspace_video_jobs():
+    """ধাপ ১: সব বৈধ ফোল্ডারের AI স্ক্রিপ্ট ও মেটাডাটা আগে তৈরি করে নেয় (অডিও বাদে)"""
+    print("\nScanning Workspace folders for AI Script Generation...")
+    if not os.path.exists(WORKSPACE_DIR):
+        return []
 
     folders = [f for f in sorted(os.listdir(WORKSPACE_DIR)) if os.path.isdir(os.path.join(WORKSPACE_DIR, f)) and f.lower() != "shorts"]
-    processed_count = 0
+    prepared_jobs = []
 
     for folder_name in folders:
-        if processed_count >= MAX_VIDEOS_PER_RUN:
-            print(f"\n⏸️ Batch limit ({MAX_VIDEOS_PER_RUN} videos) reached. Remaining will process in next hourly run.\n")
+        if len(prepared_jobs) >= MAX_VIDEOS_PER_RUN:
+            print(f"\n⏸️ Batch limit ({MAX_VIDEOS_PER_RUN} videos) reached. Remaining will process in next run.\n")
             break
 
         folder_path = os.path.join(WORKSPACE_DIR, folder_name)
@@ -203,86 +40,123 @@ def process_ready_videos(yt):
                 shutil.rmtree(folder_path, ignore_errors=True)
                 continue
 
-            txt_path, link_path, article_path = None, None, None
+            existing_audio_file, txt_path, link_path, article_path = None, None, None, None
+            custom_thumb_path = None
             img_files = []
-            
+
             for file in sorted(os.listdir(folder_path)):
-                ext = file.lower().split('.')[-1]
-                if file.lower() == "title.txt": txt_path = os.path.join(folder_path, file)
-                elif file.lower() == "link.txt": link_path = os.path.join(folder_path, file)
-                elif file.lower() == "article.txt": article_path = os.path.join(folder_path, file)
-                elif ext in ['jpg', 'jpeg', 'png', 'webp']: img_files.append(os.path.join(folder_path, file))
-                    
+                f_lower = file.lower()
+                ext = f_lower.split('.')[-1]
+                if ext in ['mp3', 'wav', 'm4a', 'aac']:
+                    existing_audio_file = file
+                elif f_lower == "title.txt":
+                    txt_path = os.path.join(folder_path, file)
+                elif f_lower == "link.txt":
+                    link_path = os.path.join(folder_path, file)
+                elif f_lower == "article.txt":
+                    article_path = os.path.join(folder_path, file)
+                elif any(k in f_lower for k in ["thumbnail", "thumb"]) and ext in ['jpg', 'jpeg', 'png', 'webp']:
+                    custom_thumb_path = os.path.join(folder_path, file)
+                    continue
+                elif ext in ['jpg', 'jpeg', 'png', 'webp']:
+                    img_files.append(os.path.join(folder_path, file))
+
             if not img_files:
                 shutil.rmtree(folder_path, ignore_errors=True)
                 continue
 
             raw_title = folder_name
             if txt_path and os.path.exists(txt_path):
-                with open(txt_path, 'r', encoding='utf-8') as tf: raw_title = tf.read().strip()
+                with open(txt_path, 'r', encoding='utf-8') as tf:
+                    raw_title = tf.read().strip() or folder_name
+
+            if is_forbidden_article(raw_title):
+                shutil.rmtree(folder_path, ignore_errors=True)
+                continue
 
             article_link = ""
             if link_path and os.path.exists(link_path):
-                with open(link_path, 'r', encoding='utf-8') as lf: article_link = lf.read().strip()
+                with open(link_path, 'r', encoding='utf-8') as lf:
+                    article_link = lf.read().strip()
 
             article_text = ""
             if article_path and os.path.exists(article_path):
-                with open(article_path, 'r', encoding='utf-8') as af: article_text = af.read().strip()
+                with open(article_path, 'r', encoding='utf-8') as af:
+                    article_text = af.read().strip()
+            elif article_link:
+                _, article_text, _ = scrape_article_content_and_images(article_link)
 
-            print(f"\n========== Processing [{processed_count+1}/{MAX_VIDEOS_PER_RUN}]: {folder_name} ==========")
+            print(f"\n========== [SCRIPT PHASE {len(prepared_jobs) + 1}/{MAX_VIDEOS_PER_RUN}]: {folder_name} ==========")
 
             opt_title, voiceover_script, thumb_meta, video_desc, video_tags = generate_job_content(
                 raw_title, img_files, article_text=article_text
             )
 
-            if not voiceover_script:
-                print(f"⚠️ Could not generate script for '{folder_name}'. Skipping...")
+            if not voiceover_script or len(voiceover_script.split()) < 25:
+                print(f"⚠️ Could not generate valid script for '{folder_name}'. Skipping...")
                 continue
 
-            video_title = opt_title
-
-            # অডিও তৈরি
-            gen_audio_path = os.path.join(TMP_DIR, "voiceover.mp3")
-            if os.path.exists(gen_audio_path): os.remove(gen_audio_path)
-            if not generate_voiceover_audio_pipeline(voiceover_script, gen_audio_path):
-                print("❌ Audio generation failed.")
-                continue
-
-            # থাম্বনেইল তৈরি
-            first_circular_img = img_files[0] if img_files else None
-            thumbnail_path = os.path.join(TMP_DIR, "thumbnail.jpg")
-            if os.path.exists(thumbnail_path): os.remove(thumbnail_path)
-            
-            generate_dynamic_thumbnail(
-                raw_title, thumbnail_path, thumb_meta=thumb_meta, circular_img_path=first_circular_img
-            )
-
-            # স্ক্রলিং ভিডিও রেন্ডারিং
-            out_video_file = os.path.join(TMP_DIR, "final_out.mp4")
-            if os.path.exists(out_video_file): os.remove(out_video_file)
-
-            print("🎬 Rendering Smooth Scrolling Video for Slideshow...")
-            render_video_slideshow(gen_audio_path, img_files, out_video_file)
-            
-            upload_success = upload_to_youtube(
-                yt, out_video_file, video_title, 
-                thumbnail_path if os.path.exists(thumbnail_path) else None,
-                description=video_desc, tags=video_tags, schedule_upload=True
-            )
-            
-            if upload_success:
-                add_to_history(raw_title)
-                if article_link: add_to_history(article_link)
-                shutil.rmtree(folder_path, ignore_errors=True)
-                processed_count += 1
-                print(f"✅ Video Uploaded & Local Folder Cleared: '{folder_name}'\n")
+            prepared_jobs.append({
+                "folder_name": folder_name,
+                "folder_path": folder_path,
+                "raw_title": raw_title,
+                "article_link": article_link,
+                "video_title": opt_title,
+                "voiceover_script": voiceover_script,
+                "thumb_meta": thumb_meta,
+                "video_desc": video_desc,
+                "video_tags": video_tags,
+                "img_files": img_files,
+                "custom_thumb_path": custom_thumb_path,
+                "existing_audio_file": existing_audio_file,
+            })
 
         except Exception:
             traceback.print_exc()
 
-# =========================================================================
-# 🌟 ৩. শর্টস হ্যান্ডলার
-# =========================================================================
+    return prepared_jobs
+
+
+def finalize_workspace_video_job(yt, job, audio_path):
+    """ধাপ ৩: অডিও পাওয়ার পর ওয়ার্কস্পেস ভিডিও রেন্ডার ও আপলোড (পুরনো থাম্বনেইল ও ভিডিও এডিটিং অপরিবর্তিত)"""
+    folder_name = job["folder_name"]
+    folder_path = job["folder_path"]
+    os.makedirs(TMP_DIR, exist_ok=True)
+
+    first_circular_img = job["img_files"][0] if job["img_files"] else None
+    thumbnail_path = os.path.join(TMP_DIR, "thumbnail.jpg")
+    if os.path.exists(thumbnail_path):
+        os.remove(thumbnail_path)
+
+    custom_thumb_path = job["custom_thumb_path"]
+    if custom_thumb_path and os.path.exists(custom_thumb_path):
+        with Image.open(custom_thumb_path) as c_thumb:
+            c_thumb.convert("RGB").save(thumbnail_path, "JPEG", quality=100, subsampling=0)
+    else:
+        generate_dynamic_thumbnail(
+            job["raw_title"], thumbnail_path, thumb_meta=job["thumb_meta"], circular_img_path=first_circular_img
+        )
+
+    out_video_file = os.path.join(TMP_DIR, "final_out.mp4")
+    if os.path.exists(out_video_file):
+        os.remove(out_video_file)
+
+    print("🎬 Rendering Smooth Scrolling Video for Slideshow...")
+    render_video_slideshow(audio_path, job["img_files"], out_video_file)
+
+    upload_success = upload_to_youtube(
+        yt, out_video_file, job["video_title"],
+        thumbnail_path if os.path.exists(thumbnail_path) else None,
+        description=job["video_desc"], tags=job["video_tags"], schedule_upload=True
+    )
+
+    if upload_success:
+        add_to_history(job["raw_title"])
+        if job["article_link"]:
+            add_to_history(job["article_link"])
+        shutil.rmtree(folder_path, ignore_errors=True)
+        print(f"✅ Video Uploaded & Local Folder Cleared: '{folder_name}'\n")
+
 
 def process_shorts_folder(yt):
     shorts_dir = None
@@ -291,44 +165,114 @@ def process_shorts_folder(yt):
             if f.lower() == "shorts" and os.path.isdir(os.path.join(WORKSPACE_DIR, f)):
                 shorts_dir = os.path.join(WORKSPACE_DIR, f)
                 break
-    if not shorts_dir: return
+    if not shorts_dir:
+        return
 
     for file in os.listdir(shorts_dir):
-        if file == ".keep": continue
+        if file == ".keep":
+            continue
         file_path = os.path.join(shorts_dir, file)
-        if os.path.isdir(file_path): continue 
-        
+        if os.path.isdir(file_path):
+            continue
+
         ext = file.lower().split('.')[-1]
         if ext in ['mp4', 'mov', 'mkv', 'avi']:
             video_title = os.path.splitext(file)[0]
             upload_success = upload_to_youtube(
-                yt, file_path, video_title, thumbnail_path=None, 
+                yt, file_path, video_title, thumbnail_path=None,
                 description=video_title, tags=None, schedule_upload=True
             )
             if upload_success:
                 add_to_history(f"[SHORTS] {video_title}")
-                try: os.remove(file_path)
-                except Exception: pass
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
 
 if __name__ == "__main__":
-    print("\n====== [ Hybrid Video Automation Active (Manual Drive + RSS) ] ======\n")
+    print("\n====== [ Hybrid Video Automation Active | Vision AI + Batch TTS ] ======\n")
     try:
+        os.makedirs(TMP_DIR, exist_ok=True)
         yt_service = get_youtube_service()
 
-        try: process_manual_drive_task(yt_service)
-        except Exception: traceback.print_exc()
+        # ---------------- ধাপ ১: সব স্ক্রিপ্ট আগে জেনারেট করা ----------------
+        manual_job = None
+        try:
+            manual_job = prepare_manual_drive_job()
+        except Exception:
+            traceback.print_exc()
 
-        try: check_new_articles_and_prepare_folders()
-        except Exception: traceback.print_exc()
+        try:
+            check_new_articles_and_prepare_folders()
+        except Exception:
+            traceback.print_exc()
 
-        try: process_ready_videos(yt_service)
-        except Exception: traceback.print_exc()
+        workspace_jobs = []
+        try:
+            workspace_jobs = prepare_workspace_video_jobs()
+        except Exception:
+            traceback.print_exc()
 
-        try: process_shorts_folder(yt_service)
-        except Exception: traceback.print_exc()
+        # ---------------- ধাপ ২: ব্যাচ অডিও জেনারেশন ----------------
+        batch_tasks = []
+        manual_audio_target = None
+
+        if manual_job:
+            if manual_job["custom_audio_file"]:
+                manual_audio_target = manual_job["custom_audio_file"]
+                print(f"🎵 [MANUAL PRE-EXISTING AUDIO] Using '{os.path.basename(manual_audio_target)}'")
+            else:
+                manual_audio_target = os.path.join(TMP_DIR, "manual_voiceover.wav")
+                batch_tasks.append({
+                    "filename": "manual_voiceover.wav",
+                    "text": manual_job["voiceover_script"],
+                    "target_path": manual_audio_target,
+                })
+
+        for idx, job in enumerate(workspace_jobs):
+            if job["existing_audio_file"]:
+                job["audio_target"] = os.path.join(job["folder_path"], job["existing_audio_file"])
+                print(f"🎵 [PRE-EXISTING AUDIO] Using '{job['existing_audio_file']}' for '{job['folder_name']}'")
+            else:
+                target_wav = os.path.join(job["folder_path"], "voiceover.wav")
+                job["audio_target"] = target_wav
+                batch_tasks.append({
+                    "filename": f"ws_{idx}_voiceover.wav",
+                    "text": job["voiceover_script"],
+                    "target_path": target_wav,
+                })
+
+        if batch_tasks:
+            generate_voiceover_batch_pipeline(batch_tasks, os.path.join(TMP_DIR, "batch_audio"))
+        else:
+            print("ℹ️ কোনো নতুন ভয়েসওভার তৈরির প্রয়োজন নেই।")
+
+        # ---------------- ধাপ ৩: ভিডিও রেন্ডার ও YouTube আপলোড ----------------
+        if manual_job and manual_audio_target and os.path.exists(manual_audio_target):
+            try:
+                finalize_manual_drive_job(yt_service, manual_job, manual_audio_target)
+            except Exception:
+                traceback.print_exc()
+
+        for job in workspace_jobs:
+            audio_target = job.get("audio_target")
+            if not audio_target or not os.path.exists(audio_target):
+                print(f"⚠️ Audio missing for '{job['folder_name']}'. Skipping.")
+                continue
+            try:
+                finalize_workspace_video_job(yt_service, job, audio_target)
+            except Exception:
+                traceback.print_exc()
+
+        try:
+            process_shorts_folder(yt_service)
+        except Exception:
+            traceback.print_exc()
 
     except Exception:
         traceback.print_exc()
     finally:
-        if os.path.exists(TMP_DIR): shutil.rmtree(TMP_DIR, ignore_errors=True)
+        if os.path.exists(TMP_DIR):
+            shutil.rmtree(TMP_DIR, ignore_errors=True)
         print("\nAll Tasks Finalized Perfectly.\n======================================")
