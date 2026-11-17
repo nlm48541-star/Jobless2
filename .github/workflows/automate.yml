@@ -2,10 +2,9 @@ name: RSS Video Automation System
 
 on:
   repository_dispatch:
-    types: [rss_video_check] 
-  workflow_dispatch: 
+    types: [rss_video_check]
+  workflow_dispatch:
 
-# 🌟 কোনো অবস্থাতেই রানিং ভিডিও রেন্ডারিং ক্যানসেল হবে না
 concurrency:
   group: rss-automation-jobless
   cancel-in-progress: false
@@ -25,16 +24,14 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
           cache: 'pip'
 
-      # 🌟 Rclone, FFmpeg ও বাংলা ফন্ট ইনস্টল
       - name: Install System Dependencies (Fonts, FFmpeg, Rclone)
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-beng fonts-beng-extra libraqm-dev libraqm0 libfribidi0 libharfbuzz0b ffmpeg rclone
 
-      # 🌟 Rclone কনফিগারেশন সেটআপ
       - name: Configure Rclone
         shell: python
         env:
@@ -56,9 +53,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 🌟 পাইথন রান
       - name: Run Python Process (Manual Drive & RSS Auto)
         env:
+          PYTHONUNBUFFERED: "1"
           CLIENT_ID: ${{ secrets.CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
@@ -71,7 +68,9 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
-        run: python main.py
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          WHATSAPP_NUMBER: ${{ secrets.WHATSAPP_NUMBER }}
+        run: python -u main.py
 
       - name: Save & Commit History and API Key Trackers
         if: always()
