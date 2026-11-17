@@ -66,9 +66,6 @@ jobs:
           CEREBRAS_API_KEYS: ${{ secrets.CEREBRAS_API_KEYS }}
           OLLAMA_API_KEYS: ${{ secrets.OLLAMA_API_KEYS }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
-          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
           WHATSAPP_NUMBER: ${{ secrets.WHATSAPP_NUMBER }}
         run: python -u main.py
 
