@@ -106,7 +106,7 @@ def _merge_wav_chunks_bytes(wav_bytes_list, out_wav_path, pause_sec=0.12):
 
 
 def _postprocess_ninada_audio(raw_wav_path: Path, final_output_path: Path):
-    """atempo=0.92 স্বাভাবিক গতি ও স্টুডিও মাস্টারিং প্রয়োগ করে চূড়ান্ত অডিও তৈরি করে"""
+    """Ninada ব্যাকআপ: atempo=0.92 ও স্টুডিও মাস্টারিং প্রয়োগ করে চূড়ান্ত অডিও তৈরি"""
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not shutil.which("ffmpeg"):
@@ -149,6 +149,7 @@ def _postprocess_ninada_audio(raw_wav_path: Path, final_output_path: Path):
 
 
 def synthesize_with_ninada(tts_engine, speech_text, output_audio_path):
+    """Priority 2 (Backup): Ninada v5.1.2 জেনারেশন"""
     if not speech_text:
         return False
 
@@ -175,10 +176,10 @@ def synthesize_with_ninada(tts_engine, speech_text, output_audio_path):
 
         if _postprocess_ninada_audio(tmp_raw_wav, out_path):
             audio_mb = round(out_path.stat().st_size / (1024 * 1024), 2)
-            print(f"  ✅ [SUCCESS] Generated via Ninada v5.1.2 ({voice_gender})! ({audio_mb} MB in {round(time.time() - start_t, 2)}s)")
+            print(f"  ✅ [SUCCESS] Generated via Ninada v5.1.2 Backup ({voice_gender})! ({audio_mb} MB in {round(time.time() - start_t, 2)}s)")
             return True
     except Exception as e:
-        print(f"  ❌ Ninada TTS Error: {e}")
+        print(f"  ❌ Ninada Backup TTS Error: {e}")
     finally:
         if tmp_raw_wav.exists():
             try:
@@ -189,9 +190,37 @@ def synthesize_with_ninada(tts_engine, speech_text, output_audio_path):
     return False
 
 
+def has_kaggle_credentials():
+    return bool(
+        os.environ.get("KAGGLE_API_TOKEN", "").strip()
+        or (Path.home() / ".kaggle" / "kaggle.json").exists()
+        or (Path.home() / ".kaggle" / "access_token").exists()
+    )
+
+
+def synthesize_local_fallback(output_audio_path):
+    for f in ["sample_voice.mp3", "sample_voice.wav", "Photos/bg_music.mp3"]:
+        if os.path.exists(f) and os.path.getsize(f) > 1000:
+            if str(output_audio_path).lower().endswith(".wav") and f.lower().endswith(".mp3") and shutil.which("ffmpeg"):
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", f, "-ar", "24000", "-ac", "1", str(output_audio_path)],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                shutil.copyfile(f, output_audio_path)
+            print(f"  ✅ Copied local fallback audio '{f}'!")
+            return True
+    return False
+
+
 def generate_voiceover_batch_pipeline(batch_items, batch_work_dir):
     """
-    কেবল Ninada v5.1.2 (bn, male, atempo=0.92 + studio mastering) দিয়ে অডিও তৈরি করে
+    🌟 হাইব্রিড অডিও পাইপলাইন:
+    ১ম অগ্রাধিকার (Primary): Kaggle IndicF5_Bangladeshi (ডুয়াল T4 GPU ব্যাচ)
+    ২য় অগ্রাধিকার (Backup): Ninada v5.1.2 Neural TTS (atempo=0.92 + Studio Mastering)
+    ৩য় অগ্রাধিকার (Fallback): লোকাল স্যাম্পল অডিও
     """
     if not batch_items:
         return {}
@@ -207,27 +236,81 @@ def generate_voiceover_batch_pipeline(batch_items, batch_work_dir):
         })
 
     print("\n" + "=" * 65)
-    print("🎙️ [AUDIO ENGINE] Ninada v5.1.2 Neural TTS (Bangla Male | atempo=0.92)")
+    print("🎙️ [AUDIO ENGINE] Primary: Kaggle IndicF5 | Backup: Ninada v5.1.2")
     print(f"📦 Total Scripts Queued: {len(cleaned_tasks)}")
     for idx, t in enumerate(cleaned_tasks, 1):
         print(f"  #{idx}: {t['filename']} | {len(t['text'].split())} words | {len(t['text'])} chars")
     print("=" * 65)
 
-    try:
-        from ninada import Ninada
-        tts_engine = Ninada(lang="bn")
-    except Exception as e:
-        print(f"❌ Failed to initialize Ninada TTS: {e}")
-        return {}
-
     results = {}
+
+    # =========================================================================
+    # 🌟 ধাপ ১: ১ম অগ্রাধিকার (Primary) - Kaggle IndicF5 (এককালীন ব্যাচ কল)
+    # =========================================================================
+    if has_kaggle_credentials():
+        try:
+            from kaggle_tts import generate_voices_batch
+            default_voice = os.environ.get("KAGGLE_DEFAULT_VOICE", "male").strip().lower()
+            speech_speed = float(os.environ.get("KAGGLE_SPEECH_SPEED", "0.93"))
+            nfe_step = int(os.environ.get("KAGGLE_NFE_STEP", "16"))
+            print("🚀 [Kaggle TTS] Submitting batch to Kaggle dual-GPU cluster...")
+            generated_map = generate_voices_batch(
+                tasks=[{"filename": t["filename"], "text": t["text"]} for t in cleaned_tasks],
+                output_dir=batch_work_dir,
+                default_voice=default_voice,
+                speech_speed=speech_speed,
+                nfe_step=nfe_step,
+            )
+            for t in cleaned_tasks:
+                src = generated_map.get(t["filename"])
+                dst = Path(t["target_path"])
+                if src and Path(src).exists() and Path(src).stat().st_size > 1000:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if str(dst).lower().endswith(".mp3") and shutil.which("ffmpeg"):
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-i", str(src), "-codec:a", "libmp3lame", "-b:a", "192k", str(dst)],
+                            check=True,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        os.remove(src)
+                    else:
+                        shutil.move(str(src), str(dst))
+                    results[t["filename"]] = str(dst)
+                    print(f"  🎵 Saved '{t['filename']}' -> {dst}")
+
+            if len(results) == len(cleaned_tasks):
+                return results
+        except Exception as e:
+            print(f"\n⚠️ [Kaggle TTS Failed] ({e}) — Switching to Backup Engine: Ninada v5.1.2...")
+    else:
+        print("ℹ️ KAGGLE_API_TOKEN পাওয়া যায়নি। সরাসরি ব্যাকআপ ইঞ্জিন (Ninada v5.1.2) ব্যবহার করা হচ্ছে...")
+
+    # =========================================================================
+    # 🌟 ধাপ ২: ২য় অগ্রাধিকার (Backup) - Ninada v5.1.2
+    # =========================================================================
+    pending = [t for t in cleaned_tasks if t["filename"] not in results and t["text"]]
+    if pending:
+        try:
+            from ninada import Ninada
+            tts_engine = Ninada(lang="bn")
+            for t in pending:
+                dst = t["target_path"]
+                os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+                if synthesize_with_ninada(tts_engine, t["text"], dst):
+                    results[t["filename"]] = dst
+        except Exception as e:
+            print(f"⚠️ Ninada backup initialization failed: {e}")
+
+    # =========================================================================
+    # 🌟 ধাপ ৩: লোকাল ফলব্যাক (যদি কোনো কারণে দুটোই ব্যর্থ হয়)
+    # =========================================================================
     for t in cleaned_tasks:
-        if not t["text"]:
-            continue
-        dst = t["target_path"]
-        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-        if synthesize_with_ninada(tts_engine, t["text"], dst):
-            results[t["filename"]] = dst
+        if t["filename"] not in results:
+            dst = t["target_path"]
+            os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+            if synthesize_local_fallback(dst):
+                results[t["filename"]] = dst
 
     return results
 
