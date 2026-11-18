@@ -14,11 +14,11 @@ HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
 }
 
+# ৩টি ওয়েবসাইটের অপ্রয়োজনীয় উইজেট, শেয়ার বাটন ও সাইডবার ফিল্টার
 NOISE_SELECTOR_RE = re.compile(
-    r'(sidebar|widget|toc|table-of-contents|ez-toc|lwptoc|rank-math-toc|faq|accordion|'
-    r'related|recent-posts|popular-posts|author-box|comment|share|social|newsletter|'
-    r'disclaimer|calculator|breadcrumb|wp-post-image|post-thumbnail|featured-image|'
-    r'entry-header|post-meta|navigation|nav-links|yarpp|crp_related)',
+    r'(sidebar|widget|toc|table-of-contents|ez-toc|lwptoc|rank-math-toc|author-box|comment|'
+    r'share|social|newsletter|disclaimer|calculator|breadcrumb|post-meta|navigation|'
+    r'nav-links|yarpp|crp_related|td-post-sharing|sharedaddy|jp-relatedposts)',
     re.I,
 )
 
@@ -88,7 +88,7 @@ def _pick_largest_srcset_url(srcset_str):
 
 
 def _pick_real_img_src(img_tag, base_url=""):
-    """WordPress Lazy-Load (data-lazy-src, data-src) আগে চেক করে এবং ডামি data:image/svg+xml বাদ দেয়"""
+    """WordPress Lazy-Load থেকে আসল ইমেজের হাই-রেজোলিউশন URL বের করা"""
     candidates = [
         img_tag.get('data-lazy-src'),
         img_tag.get('data-src'),
@@ -117,19 +117,23 @@ def _pick_real_img_src(img_tag, base_url=""):
             continue
         if BAD_IMG_RE.search(u_lower):
             continue
-        if any(ext in u_lower for ext in ('.jpg', '.jpeg', '.png', '.webp')) or 'uploads' in u_lower or 'googleusercontent' in u_lower:
+        if any(ext in u_lower for ext in ('.jpg', '.jpeg', '.png', '.webp')) or 'uploads' in u_lower or 'googleusercontent' in u_lower or 'i.ibb.co' in u_lower:
             return url
     return None
 
 
 def _strip_noise_elements(container):
+    """আর্টিকেলের কনটেন্ট অক্ষুণ্ণ রেখে শুধু অপ্রয়োজনীয় ট্যাগ ডিকম্পোজ করা"""
     for tag in container(['script', 'style', 'noscript', 'nav', 'footer', 'header', 'aside', 'form', 'iframe', 'svg']):
         tag.decompose()
-    for el in list(container.find_all(['div', 'section', 'ul', 'nav'])):
+    for el in list(container.find_all(['div', 'section', 'ul', 'aside'])):
         if not getattr(el, 'attrs', None):
             continue
         cls = " ".join(el.get('class', [])) if isinstance(el.get('class'), list) else str(el.get('class', ''))
         eid = str(el.get('id', ''))
+        # ইমেজ র‍্যাপার যেন ভুলবশত ডিলিট না হয়
+        if any(w in cls for w in ['wp-block-image', 'image', 'attachment', 'gallery']):
+            continue
         if NOISE_SELECTOR_RE.search(f"{cls} {eid}"):
             el.decompose()
 
@@ -163,6 +167,11 @@ def extract_image_urls_from_html(html_content, base_url=""):
 
 
 def _clean_article_text(container):
+    """
+    ৩টি ওয়েবসাইটের পদের বিবরণ (টেবিল এবং H2/H3 হেডিং) সুন্দরভাবে সাজানো।
+    মাঝপথে কোনো break দিয়ে টেক্সট কাটা যাবে না!
+    """
+    # ১. টেবিল সুন্দরভাবে সাজানো
     for table in container.find_all('table'):
         rows_txt = []
         for tr in table.find_all('tr'):
@@ -170,40 +179,48 @@ def _clean_article_text(container):
             cells = [c for c in cells if c]
             if cells:
                 rows_txt.append(" | ".join(cells))
-        table.replace_with(NavigableString("\n" + "\n".join(rows_txt) + "\n"))
+        table.replace_with(NavigableString("\n[টেবিল শুরু]\n" + "\n".join(rows_txt) + "\n[টেবিল শেষ]\n"))
+
+    # ২. হেডিংগুলোকে স্পষ্টভাবে চিহ্নিত করা
+    for h in container.find_all(['h2', 'h3', 'h4']):
+        h_txt = h.get_text(strip=True)
+        if h_txt:
+            h.replace_with(NavigableString(f"\n### {h_txt}\n"))
+
+    # ৩. লিস্ট আইটেমগুলোকে বুলেট পয়েন্টে রূপান্তর
+    for li in container.find_all('li'):
+        li_txt = li.get_text(strip=True)
+        if li_txt:
+            li.replace_with(NavigableString(f"- {li_txt}\n"))
 
     raw_text = container.get_text(separator='\n', strip=True)
 
-    stop_markers = [
-        "সাধারণ জিজ্ঞাসা (FAQ)",
-        "আরও চলমান নিয়োগ",
-        "সর্বশেষ প্রকাশিত",
-        "গত ৭ দিনের জনপ্রিয়",
-        "নিচে সাম্প্রতিক আরও",
-        "প্রস্তুতি ও এক্সপার্ট টিপস",
-        "লিখেছেন ও যাচাই করেছেন",
-        "আমাদের সম্পর্কে",
-        "Your email address will not be published",
+    # শুধু কমেন্ট বা ফুটারের একেবারে শেষ অংশ বাদ দেওয়া
+    final_stop_markers = [
         "Leave a Comment",
+        "আপনার মন্তব্য বা প্রশ্ন লিখুন",
+        "Your email address will not be published",
+        "মন্তব্য করুন",
     ]
-    lines = []
+
+    cleaned_lines = []
     for line in raw_text.splitlines():
         s = line.strip()
         if not s:
             continue
-        if any(marker in s for marker in stop_markers):
+        if any(marker in s for marker in final_stop_markers):
             break
-        lines.append(s)
+        # অন্য চাকরির অযাচিত লিংক ফিল্টার
+        if any(bad in s for bad in ["আরও দেখুন -", "হট জব সার্কুলার", "গত ৭ দিনের জনপ্রিয়"]):
+            continue
+        cleaned_lines.append(s)
 
-    cleaned = "\n".join(lines)
+    cleaned = "\n".join(cleaned_lines)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
     return cleaned.strip()
 
 
 def scrape_article_content_and_images(page_url):
-    """
-    🌟 Lazy-Load ছবি ও পরিষ্কার টেবিল টেক্সট সংগ্রহ করে
-    """
     title = ""
     clean_text = ""
     img_urls = []
@@ -254,7 +271,7 @@ def download_image(url, output_path, referer_url=""):
                 f.write(req.content)
             with Image.open(output_path) as im:
                 w, h = im.size
-                if w < 450 or h < 350:
+                if w < 400 or h < 300:
                     os.remove(output_path)
                     return False
                 im.convert("RGB").save(output_path, "JPEG", quality=92)
@@ -269,7 +286,9 @@ def download_image(url, output_path, referer_url=""):
 
 
 def filter_and_download_circular_images(img_urls, target_dir, referer_url="", file_prefix="temp_", final_prefix=""):
-    """ছবি ডাউনলোড করে ব্লগের কভার ব্যানার (ratio >= 1.42) বাদ দিয়ে আসল সার্কুলার ছবিগুলো রাখে"""
+    """
+    ব্লগের আলংকারিক কভার ব্যানার (রেশিও >= ১.৪২) বাদ দিয়ে আসল খাড়া সার্কুলার পাতাগুলো রাখা
+    """
     downloaded_info = []
     for idx, src in enumerate(img_urls, start=1):
         temp_img_path = os.path.join(target_dir, f"{file_prefix}{idx}.jpg")
@@ -284,6 +303,7 @@ def filter_and_download_circular_images(img_urls, target_dir, referer_url="", fi
     if not downloaded_info:
         return []
 
+    # খাড়া বা সার্কুলার পাতা (aspect ratio < 1.42)
     non_banners = [item for item in downloaded_info if item[3] < 1.42]
     if non_banners:
         for item in downloaded_info:
@@ -372,7 +392,6 @@ def check_new_articles_and_prepare_folders():
 
                 scraped_title, article_text, img_urls = scrape_article_content_and_images(link)
 
-                # RSS কন্টেন্ট ফলব্যাক (যদি পেজ স্ক্র্যাপিং থেকে ছবি বা টেক্সট না আসে)
                 if not img_urls or not article_text:
                     rss_html = entry.content[0].value if hasattr(entry, 'content') and entry.content else getattr(entry, 'summary', "")
                     if rss_html:
