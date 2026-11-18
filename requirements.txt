@@ -9,8 +9,10 @@ Pillow
 requests
 numpy<2.0.0
 fonttools
+kaggle>=2.0.0
 ninada
 onnxruntime>=1.18.0
 soundfile>=0.12.1
 scipy
 huggingface_hub
+six
