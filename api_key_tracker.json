@@ -2,15 +2,15 @@
   "openrouter_index": 1,
   "gemini_index": 0,
   "openrouter": {
-    "current_index": 0,
-    "last_updated": "2026-11-17T19:05:07.128308"
+    "current_index": 1,
+    "last_updated": "2026-11-18T07:16:27.216180"
   },
   "ollama": {
     "current_index": 0,
-    "last_updated": "2026-11-17T19:03:19.488429"
+    "last_updated": "2026-11-18T07:14:06.562721"
   },
   "gemini_text": {
     "current_index": 0,
-    "last_updated": "2026-11-17T19:03:27.381763"
+    "last_updated": "2026-11-18T07:14:11.439414"
   }
 }
