@@ -191,7 +191,7 @@ def process_shorts_folder(yt):
 
 
 if __name__ == "__main__":
-    print("\n====== [ Hybrid Video Automation Active | Vision AI + Batch TTS ] ======\n")
+    print("\n====== [ Hybrid Video Automation Active | Ninada TTS Engine ] ======\n")
     try:
         os.makedirs(TMP_DIR, exist_ok=True)
         yt_service = get_youtube_service()
@@ -214,7 +214,7 @@ if __name__ == "__main__":
         except Exception:
             traceback.print_exc()
 
-        # ---------------- ধাপ ২: ব্যাচ অডিও জেনারেশন ----------------
+        # ---------------- ধাপ ২: ব্যাচ অডিও জেনারেশন (Ninada) ----------------
         batch_tasks = []
         manual_audio_target = None
 
