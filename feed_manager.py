@@ -9,7 +9,7 @@ WORKSPACE_DIR = "workspace"
 HISTORY_FILE = os.path.join(WORKSPACE_DIR, "history.txt")
 
 # আগের প্রজেক্টের ব্লক করা কিওয়ার্ডসমূহ (বানানভেদসহ)
-FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'ব্যাঙ্ক', 'bank', 'চলমান']
+FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'ব্যাঙ্ক', 'bank', 'Bank', 'NGO', 'সকল', 'বীমা', 'সাপ্তাহিক', 'চলমান']
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
