@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import os, json, time, re, shutil, requests, feedparser
+import os, json, time, re, shutil, unicodedata, requests, feedparser
 from datetime import datetime, timedelta
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup, NavigableString
@@ -7,33 +7,48 @@ from PIL import Image
 
 WORKSPACE_DIR = "workspace"
 HISTORY_FILE = os.path.join(WORKSPACE_DIR, "history.txt")
-FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'bank', 'চলমান']
+
+# আগের প্রজেক্টের ব্লক করা কিওয়ার্ডসমূহ (বানানভেদসহ)
+FORBIDDEN_KEYWORDS = ['এনজিও', 'ngo', 'ব্যাংক', 'ব্যাঙ্ক', 'bank', 'চলমান']
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'bn-BD,bn;q=0.9,en-US;q=0.8,en;q=0.7',
 }
 
-# ৩টি ওয়েবসাইটের অপ্রয়োজনীয় উইজেট, শেয়ার বাটন ও সাইডবার ফিল্টার
+# ওয়ার্ড বাউন্ডারি (\b) সহ নয়েজ ফিল্টার যাতে আর্টিকেল কনটেন্ট নিরাপদ থাকে
 NOISE_SELECTOR_RE = re.compile(
-    r'(sidebar|widget|toc|table-of-contents|ez-toc|lwptoc|rank-math-toc|author-box|comment|'
-    r'share|social|newsletter|disclaimer|calculator|breadcrumb|post-meta|navigation|'
-    r'nav-links|yarpp|crp_related|td-post-sharing|sharedaddy|jp-relatedposts)',
+    r'\b(sidebar|widget|widget-area|ez-toc|lwptoc|rank-math-toc|table-of-contents|'
+    r'author-box|comments-area|comment-respond|sharedaddy|jp-relatedposts|yarpp|'
+    r'crp_related|td-post-sharing|td-related-posts|related-posts|recent-posts|'
+    r'popular-posts|social-share|share-buttons|newsletter|calculator|breadcrumb|'
+    r'post-navigation|nav-links)\b',
     re.I,
 )
 
+# \bads\b ও \blogo\b ব্যবহার করা হয়েছে যাতে 'uploads' বা বৈধ সার্কুলার URL ব্লক না হয়!
 BAD_IMG_RE = re.compile(
-    r'(logo|avatar|gravatar|icon|emoji|share|button|badge|qrcode|qr-code|favicon|'
-    r'ads|promo|author|whatsapp|telegram|facebook|messenger|placeholder|'
-    r'150x150|300x169|300x200|wp-content/themes|\.svg(?:\?|$)|\.gif(?:\?|$))',
+    r'(\blogo\b|\bavatar\b|\bgravatar\b|\bicon\b|\bemoji\b|share-button|social-share|'
+    r'\bbutton\b|\bbadge\b|qrcode|qr-code|favicon|\bads\b|\badvert\b|adsense|'
+    r'googlesyndication|\bpromo\b|author-avatar|whatsapp-icon|telegram-icon|'
+    r'facebook-icon|messenger-icon|placeholder|150x150|300x169|300x200|'
+    r'wp-content/themes|\.svg(?:\?|$)|\.gif(?:\?|$))',
     re.I,
 )
+
+VALID_IMG_EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.jfif', '.bmp')
 
 
 def is_forbidden_article(text):
     if not text:
         return False
-    return any(k in str(text).lower() for k in FORBIDDEN_KEYWORDS)
+    norm_text = unicodedata.normalize('NFC', str(text)).lower()
+    for kw in FORBIDDEN_KEYWORDS:
+        norm_kw = unicodedata.normalize('NFC', kw).lower()
+        if norm_kw in norm_text:
+            return True
+    return False
 
 
 def clean_filename(text):
@@ -87,8 +102,21 @@ def _pick_largest_srcset_url(srcset_str):
     return best_url or (parts[-1].split()[0] if parts else None)
 
 
+def _is_valid_image_url(url_lower):
+    if not url_lower.startswith('http'):
+        return False
+    if BAD_IMG_RE.search(url_lower):
+        return False
+    return (
+        any(ext in url_lower for ext in VALID_IMG_EXTS)
+        or 'uploads' in url_lower
+        or 'googleusercontent' in url_lower
+        or 'i.ibb.co' in url_lower
+        or 'wp.com/' in url_lower
+    )
+
+
 def _pick_real_img_src(img_tag, base_url=""):
-    """WordPress Lazy-Load থেকে আসল ইমেজের হাই-রেজোলিউশন URL বের করা"""
     candidates = [
         img_tag.get('data-lazy-src'),
         img_tag.get('data-src'),
@@ -98,8 +126,7 @@ def _pick_real_img_src(img_tag, base_url=""):
         img_tag.get('data-large_image'),
     ]
     for attr in ('data-lazy-srcset', 'data-srcset', 'srcset'):
-        ss = img_tag.get(attr)
-        picked = _pick_largest_srcset_url(ss)
+        picked = _pick_largest_srcset_url(img_tag.get(attr))
         if picked:
             candidates.append(picked)
     candidates.append(img_tag.get('src'))
@@ -112,66 +139,70 @@ def _pick_real_img_src(img_tag, base_url=""):
             continue
         if base_url:
             url = urljoin(base_url, url)
-        u_lower = url.lower()
-        if not u_lower.startswith('http'):
-            continue
-        if BAD_IMG_RE.search(u_lower):
-            continue
-        if any(ext in u_lower for ext in ('.jpg', '.jpeg', '.png', '.webp')) or 'uploads' in u_lower or 'googleusercontent' in u_lower or 'i.ibb.co' in u_lower:
+        if _is_valid_image_url(url.lower()):
             return url
     return None
 
 
-def _strip_noise_elements(container):
-    """আর্টিকেলের কনটেন্ট অক্ষুণ্ণ রেখে শুধু অপ্রয়োজনীয় ট্যাগ ডিকম্পোজ করা"""
-    for tag in container(['script', 'style', 'noscript', 'nav', 'footer', 'header', 'aside', 'form', 'iframe', 'svg']):
+def _strip_noise_elements(container, remove_noscript=True):
+    tags_to_remove = ['script', 'style', 'nav', 'footer', 'header', 'aside', 'form', 'iframe', 'svg']
+    if remove_noscript:
+        tags_to_remove.append('noscript')
+    for tag in container(tags_to_remove):
         tag.decompose()
     for el in list(container.find_all(['div', 'section', 'ul', 'aside'])):
         if not getattr(el, 'attrs', None):
             continue
         cls = " ".join(el.get('class', [])) if isinstance(el.get('class'), list) else str(el.get('class', ''))
         eid = str(el.get('id', ''))
-        # ইমেজ র‍্যাপার যেন ভুলবশত ডিলিট না হয়
-        if any(w in cls for w in ['wp-block-image', 'image', 'attachment', 'gallery']):
+        cls_lower = cls.lower()
+        if any(w in cls_lower for w in ['wp-block-image', 'wp-block-gallery', 'circular-image', 'attachment']):
             continue
         if NOISE_SELECTOR_RE.search(f"{cls} {eid}"):
             el.decompose()
+
+
+def _find_article_containers(soup):
+    containers = soup.find_all(
+        ['div', 'article', 'main', 'section'],
+        class_=re.compile(r'(post-body|entry-content|post-content|article-body|td-post-content|inside-article)', re.I)
+    )
+    if not containers:
+        containers = soup.find_all(
+            ['div', 'article', 'main', 'section'],
+            class_=re.compile(r'(main-content|content-area|single-content|post-wrapper)', re.I)
+        )
+    if not containers:
+        containers = [soup.find('article') or soup.find('main') or soup]
+    return containers
 
 
 def extract_image_urls_from_html(html_content, base_url=""):
     if not html_content:
         return []
     soup = BeautifulSoup(html_content, 'html.parser')
-    container = soup.find(
-        ['div', 'article', 'main', 'section'],
-        class_=re.compile(r'(post-body|entry-content|post-content|article-body|td-post-content|main-content|inside-article)', re.I)
-    ) or soup
-
-    _strip_noise_elements(container)
+    containers = _find_article_containers(soup)
 
     img_urls = []
-    for img in container.find_all('img'):
-        parent_a = img.find_parent('a')
-        if parent_a and parent_a.get('href'):
-            href = urljoin(base_url, parent_a.get('href').strip())
-            if any(ext in href.lower() for ext in ('.jpg', '.jpeg', '.png', '.webp')) and not BAD_IMG_RE.search(href):
-                if href not in img_urls:
-                    img_urls.append(href)
-                continue
+    for container in containers:
+        _strip_noise_elements(container, remove_noscript=False)
+        for img in container.find_all('img'):
+            parent_a = img.find_parent('a')
+            if parent_a and parent_a.get('href'):
+                href = urljoin(base_url, parent_a.get('href').strip())
+                if any(ext in href.lower() for ext in VALID_IMG_EXTS) and not BAD_IMG_RE.search(href):
+                    if href not in img_urls:
+                        img_urls.append(href)
+                    continue
 
-        real_url = _pick_real_img_src(img, base_url=base_url)
-        if real_url and real_url not in img_urls:
-            img_urls.append(real_url)
+            real_url = _pick_real_img_src(img, base_url=base_url)
+            if real_url and real_url not in img_urls:
+                img_urls.append(real_url)
 
     return img_urls
 
 
 def _clean_article_text(container):
-    """
-    ৩টি ওয়েবসাইটের পদের বিবরণ (টেবিল এবং H2/H3 হেডিং) সুন্দরভাবে সাজানো।
-    মাঝপথে কোনো break দিয়ে টেক্সট কাটা যাবে না!
-    """
-    # ১. টেবিল সুন্দরভাবে সাজানো
     for table in container.find_all('table'):
         rows_txt = []
         for tr in table.find_all('tr'):
@@ -181,13 +212,11 @@ def _clean_article_text(container):
                 rows_txt.append(" | ".join(cells))
         table.replace_with(NavigableString("\n[টেবিল শুরু]\n" + "\n".join(rows_txt) + "\n[টেবিল শেষ]\n"))
 
-    # ২. হেডিংগুলোকে স্পষ্টভাবে চিহ্নিত করা
     for h in container.find_all(['h2', 'h3', 'h4']):
         h_txt = h.get_text(strip=True)
         if h_txt:
             h.replace_with(NavigableString(f"\n### {h_txt}\n"))
 
-    # ৩. লিস্ট আইটেমগুলোকে বুলেট পয়েন্টে রূপান্তর
     for li in container.find_all('li'):
         li_txt = li.get_text(strip=True)
         if li_txt:
@@ -195,7 +224,6 @@ def _clean_article_text(container):
 
     raw_text = container.get_text(separator='\n', strip=True)
 
-    # শুধু কমেন্ট বা ফুটারের একেবারে শেষ অংশ বাদ দেওয়া
     final_stop_markers = [
         "Leave a Comment",
         "আপনার মন্তব্য বা প্রশ্ন লিখুন",
@@ -210,7 +238,6 @@ def _clean_article_text(container):
             continue
         if any(marker in s for marker in final_stop_markers):
             break
-        # অন্য চাকরির অযাচিত লিংক ফিল্টার
         if any(bad in s for bad in ["আরও দেখুন -", "হট জব সার্কুলার", "গত ৭ দিনের জনপ্রিয়"]):
             continue
         cleaned_lines.append(s)
@@ -228,7 +255,6 @@ def scrape_article_content_and_images(page_url):
         return title, clean_text, img_urls
     try:
         req_headers = HEADERS.copy()
-        req_headers["Referer"] = page_url
         resp = requests.get(page_url, headers=req_headers, timeout=20)
         if resp.status_code == 200:
             if not resp.encoding or resp.encoding.lower() == 'iso-8859-1':
@@ -243,15 +269,18 @@ def scrape_article_content_and_images(page_url):
             elif soup.title:
                 title = soup.title.get_text(strip=True).split('-')[0].split('|')[0].strip()
 
-            target = soup.find(
-                ['div', 'article', 'main', 'section'],
-                class_=re.compile(r'(post-body|entry-content|post-content|article-body|td-post-content|main-content|inside-article)', re.I)
-            ) or soup
-
-            _strip_noise_elements(target)
-            clean_text = _clean_article_text(target)
+            targets = _find_article_containers(soup)
+            text_parts = []
+            for t in targets:
+                _strip_noise_elements(t, remove_noscript=True)
+                txt = _clean_article_text(t)
+                if txt:
+                    text_parts.append(txt)
+            clean_text = "\n\n".join(text_parts).strip()
+        else:
+            print(f"⚠️ HTTP {resp.status_code} while scraping: {page_url}")
     except Exception as e:
-        print(f"⚠️ Error scraping article: {e}")
+        print(f"⚠️ Error scraping article ({page_url}): {e}")
     return title, clean_text, img_urls
 
 
@@ -266,12 +295,12 @@ def download_image(url, output_path, referer_url=""):
         if referer_url:
             req_headers["Referer"] = referer_url
         req = requests.get(url, headers=req_headers, timeout=20)
-        if req.status_code == 200 and len(req.content) > 8000:
+        if req.status_code == 200 and len(req.content) > 6000:
             with open(output_path, 'wb') as f:
                 f.write(req.content)
             with Image.open(output_path) as im:
                 w, h = im.size
-                if w < 400 or h < 300:
+                if w < 380 or h < 280:
                     os.remove(output_path)
                     return False
                 im.convert("RGB").save(output_path, "JPEG", quality=92)
@@ -287,7 +316,7 @@ def download_image(url, output_path, referer_url=""):
 
 def filter_and_download_circular_images(img_urls, target_dir, referer_url="", file_prefix="temp_", final_prefix=""):
     """
-    ব্লগের আলংকারিক কভার ব্যানার (রেশিও >= ১.৪২) বাদ দিয়ে আসল খাড়া সার্কুলার পাতাগুলো রাখা
+    ব্লগের আলংকারিক ১৬:৯ কভার ব্যানার (ratio >= 1.58) বাদ দিয়ে আসল সার্কুলার ছবিগুলো রাখা
     """
     downloaded_info = []
     for idx, src in enumerate(img_urls, start=1):
@@ -303,11 +332,10 @@ def filter_and_download_circular_images(img_urls, target_dir, referer_url="", fi
     if not downloaded_info:
         return []
 
-    # খাড়া বা সার্কুলার পাতা (aspect ratio < 1.42)
-    non_banners = [item for item in downloaded_info if item[3] < 1.42]
+    non_banners = [item for item in downloaded_info if item[3] < 1.58]
     if non_banners:
         for item in downloaded_info:
-            if item[3] >= 1.42:
+            if item[3] >= 1.58:
                 try:
                     os.remove(item[0])
                     print(f"✂️ [Cover Banner Removed] Dropped blog banner ({item[1]}x{item[2]}).")
@@ -387,7 +415,7 @@ def check_new_articles_and_prepare_folders():
                 if link.lower() in history_logs or raw_title.lower() in history_logs or folder_title.lower() in history_logs:
                     continue
                 if is_forbidden_article(raw_title) or is_forbidden_article(folder_title):
-                    print(f"🚫 [FILTERED] Skipping '{folder_title}'.")
+                    print(f"🚫 [FILTERED] Skipping '{folder_title}' (Forbidden keyword matched).")
                     continue
 
                 scraped_title, article_text, img_urls = scrape_article_content_and_images(link)
@@ -399,15 +427,15 @@ def check_new_articles_and_prepare_folders():
                             img_urls = extract_image_urls_from_html(rss_html, base_url=link)
                         if not article_text:
                             rss_soup = BeautifulSoup(rss_html, 'html.parser')
-                            _strip_noise_elements(rss_soup)
+                            _strip_noise_elements(rss_soup, remove_noscript=True)
                             article_text = _clean_article_text(rss_soup)
 
                 if is_forbidden_article(scraped_title):
-                    print(f"🚫 [FILTERED] Skipping '{folder_title}'.")
+                    print(f"🚫 [FILTERED] Skipping '{folder_title}' (Forbidden keyword in page title).")
                     continue
 
                 if not img_urls:
-                    print(f"⏩ Skipping '{folder_title}' (No valid circular images found).")
+                    print(f"⏩ Skipping '{folder_title}' (No valid circular images found in HTML/RSS).")
                     continue
 
                 folder_path = os.path.join(WORKSPACE_DIR, folder_title)
@@ -415,6 +443,7 @@ def check_new_articles_and_prepare_folders():
 
                 final_imgs = filter_and_download_circular_images(img_urls, folder_path, referer_url=link)
                 if not final_imgs:
+                    print(f"⏩ Skipping '{folder_title}' (Found {len(img_urls)} URL(s), but none downloaded cleanly).")
                     shutil.rmtree(folder_path, ignore_errors=True)
                     continue
 
