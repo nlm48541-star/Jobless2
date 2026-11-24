@@ -2,8 +2,8 @@
   "openrouter_index": 1,
   "gemini_index": 0,
   "openrouter": {
-    "current_index": 0,
-    "last_updated": "2026-11-24T16:07:01.593916"
+    "current_index": 1,
+    "last_updated": "2026-11-24T19:05:16.778026"
   },
   "ollama": {
     "current_index": 0,
@@ -11,10 +11,10 @@
   },
   "gemini_text": {
     "current_index": 0,
-    "last_updated": "2026-11-24T16:07:06.789368"
+    "last_updated": "2026-11-24T19:05:23.375325"
   },
   "groq": {
     "current_index": 0,
-    "last_updated": "2026-11-24T16:07:08.805856"
+    "last_updated": "2026-11-24T19:05:25.843984"
   }
 }
